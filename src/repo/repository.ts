@@ -122,7 +122,8 @@ function parseArchDb(dbTar: Buffer, repo: string): RepoPkg[] {
     }
     if (!descContent) continue;
     const desc = parseDescFile(descContent);
-    const depends = dependsContent.split('\n').map(l => l.trim().split(/[<>=]/)[0].trim()).filter(Boolean);
+    const dependsParsed = parseDescFile(dependsContent);
+    const depends = (dependsParsed['depends'] || []).map(l => l.trim().split(/[<>=]/)[0].trim()).filter(Boolean);
     const filename = (desc['filename'] || [''])[0];
     const pkgName = (desc['name'] || [''])[0];
     const version = (desc['version'] || [''])[0];
