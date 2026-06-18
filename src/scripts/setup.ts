@@ -2,6 +2,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
+import { execSync } from 'node:child_process';
 
 const CONFIG_DIR = '/etc/pacman-debian';
 const CONFIG_PATH = path.join(CONFIG_DIR, 'pacman.conf');
@@ -161,6 +162,20 @@ async function main() {
       if (await ask(`Create symlink ${linkPath} → ${target}?`, true)) {
         fs.symlinkSync(target, linkPath);
         console.log(`  Created: ${linkPath} → ${target}`);
+      }
+    }
+  }
+
+  // --- Build and install libalpm (C library for AUR helpers) ---
+  const libDir = path.join(projectDir, 'lib', 'pac4deb');
+  if (fs.existsSync(path.join(libDir, 'Makefile'))) {
+    if (await ask('Build and install libalpm.so (required for yay/expac)?', true)) {
+      try {
+        execSync(`make -C "${libDir}"`, { stdio: 'pipe', timeout: 30000 });
+        execSync(`make -C "${libDir}" install`, { stdio: 'pipe', timeout: 10000 });
+        console.log('  libalpm.so built and installed to /usr/local/lib/');
+      } catch (e: any) {
+        console.error('  Warning: libalpm build failed:', e.message);
       }
     }
   }
