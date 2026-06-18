@@ -2,6 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as https from 'node:https';
 import * as http from 'node:http';
+import * as zlib from 'node:zlib';
+import * as readline from 'node:readline';
 import { loadConfig } from './config';
 import { parseControlFile } from '../core/control';
 import { decompress } from '../core/compress';
@@ -11,6 +13,7 @@ import type { RepoPkg, RepoConfig } from '../core/types';
 
 const CACHE_DIR = '/var/cache/pacman-debian';
 const PKG_CACHE = path.join(CACHE_DIR, 'packages');
+const SYNC_DB = path.join(CACHE_DIR, 'sync');
 const DEB_CACHE = path.join(CACHE_DIR, 'pkg');
 
 async function downloadFile(url: string, onProgress?: (received: number, total: number) => void, ifModifiedSince?: string): Promise<Buffer | null> {
@@ -74,20 +77,22 @@ async function syncDebian(repo: RepoConfig, arch: string, ifModifiedSince?: stri
   const comps = repo.components || ['main'];
   for (const comp of comps) {
     const base = `${repo.server}/dists/${repo.dist}/${comp}/binary-${arch}/Packages`;
-    let buf: Buffer | null = null;
     for (const ext of ['gz', 'xz']) {
+      let gotData = false;
       try {
-        const raw = await downloadFile(`${base}.${ext}`, (rec, tot) => {
+        const url = `${base}.${ext}`;
+        const buf = await downloadFile(url, (rec, tot) => {
           if (onProgress) onProgress(totalSize + rec, totalSize + (tot || 0));
         }, ifModifiedSince);
-        if (raw === null) return { pkgs: [], size: 0 }; // 304 — up to date
-        totalSize += raw.length;
-        buf = decompress(raw, `packages.${ext}`);
+        if (buf === null) return { pkgs: [], size: 0 }; // 304
+        gotData = true;
+        totalSize += buf.length;
+        const text = decompress(buf, `packages.${ext}`).toString('utf8');
+        all.push(...parseDebianPackages(text, repo.name));
         break;
-      } catch { continue; }
+      } catch (e: any) { if (gotData) throw e; }
     }
-    if (buf) all.push(...parseDebianPackages(buf.toString('utf8'), repo.name));
-    ifModifiedSince = undefined; // only check first component with conditional request
+    ifModifiedSince = undefined;
   }
   return { pkgs: all, size: totalSize };
 }

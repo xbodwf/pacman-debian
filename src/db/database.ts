@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { savePackage, removePackage, removeFileIndex, getPackage as sqlGetPkg, loadAllPackages } from './sqlite';
+import * as localdb from './localdb';
 import type { InstalledPackage, Database, Transaction } from '../core/types';
 
 const DATA_DIR = '/var/lib/pacman-debian';
@@ -15,34 +15,36 @@ export function initDb(): void {
 
 export function loadDatabase(): Database {
   const db: Database = { packages: new Map(), fileIndex: new Map() };
-  const pkgs = loadAllPackages();
-  for (const p of pkgs) db.packages.set(p.name, p);
+  for (const pkg of localdb.getAllPackages()) {
+    db.packages.set(pkg.name, pkg);
+    db.fileIndex.set(pkg.name, pkg.name);
+  }
   return db;
 }
 
 export function saveDatabase(_db: Database): void {
-  // SQLite persists writes immediately via savePackage
+  // localdb persists writes immediately
 }
 
 export function isInstalled(db: Database, name: string): boolean {
-  return db.packages.has(name);
+  return db.packages.has(name) || !!localdb.getPackage(name);
 }
 
 export function getPackage(db: Database, name: string): InstalledPackage | undefined {
-  return db.packages.get(name) || sqlGetPkg(name);
+  return db.packages.get(name) || localdb.getPackage(name);
 }
 
 export function addPackage(db: Database, pkg: InstalledPackage): void {
   db.packages.set(pkg.name, pkg);
-  savePackage(pkg);
+  localdb.addPackage(pkg);
 }
 
 export function removePkg(db: Database, name: string): InstalledPackage | undefined {
-  const pkg = db.packages.get(name);
+  const pkg = db.packages.get(name) || localdb.getPackage(name);
   if (!pkg) return undefined;
   for (const f of pkg.files) db.fileIndex.delete(f);
   db.packages.delete(name);
-  removePackage(name);
+  localdb.removePackage(name, pkg.version);
   const base = path.join(INFO_DIR, name);
   for (const s of ['preinst', 'postinst', 'prerm', 'postrm']) {
     const fp = path.join(base, s);

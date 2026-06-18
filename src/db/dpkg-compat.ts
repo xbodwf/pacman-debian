@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
-import { refreshDpkgCache, getAllDpkgPackages, getDpkgPackage, dpkgHasPackage as sqlDpkgHas, upsertDpkgEntry, removeDpkgCacheEntry, syncDpkgCache } from './sqlite';
+import { execSync } from 'node:child_process';
+import { parseControlFile } from '../core/control';
 import type { InstalledPackage } from '../core/types';
 
 const DPKG_STATUS = '/var/lib/dpkg/status';
@@ -19,23 +20,39 @@ export interface DpkgEntry {
   homepage?: string;
 }
 
+/* ---- In-memory cache with mtime check ---- */
+let _dpkgCache: { mtime: number; data: Map<string, DpkgEntry> } | null = null;
+
 export function readDpkgStatus(): Map<string, DpkgEntry> {
-  refreshDpkgCache();
+  if (!fs.existsSync(DPKG_STATUS)) return new Map();
+  try {
+    const st = fs.statSync(DPKG_STATUS);
+    if (_dpkgCache && _dpkgCache.mtime === st.mtimeMs) return _dpkgCache.data;
+  } catch {}
+
+  const content = fs.readFileSync(DPKG_STATUS, 'utf8');
   const result = new Map<string, DpkgEntry>();
-  for (const row of getAllDpkgPackages()) {
-    result.set(row.name, {
-      package: row.name, version: row.version, architecture: row.architecture,
-      status: 'install ok installed', description: row.description,
-      maintainer: row.maintainer, depends: row.depends,
-      installedSize: row.installed_size, section: row.section,
-      priority: row.priority, homepage: row.homepage,
+  for (const entry of content.split('\n\n').filter(Boolean)) {
+    const fields = parseControlFile(entry);
+    const name = fields['package'];
+    if (!name) continue;
+    const status = (fields['status'] || '').trim();
+    if (!status.startsWith('install ok installed')) continue;
+    result.set(name, {
+      package: name, version: fields['version'] || '',
+      architecture: fields['architecture'] || '', status,
+      description: fields['description']?.split('\n')[0],
+      maintainer: fields['maintainer'], depends: fields['depends'],
+      installedSize: fields['installed-size'] ? parseInt(fields['installed-size'], 10) : undefined,
+      section: fields['section'], priority: fields['priority'], homepage: fields['homepage'],
     });
   }
+  _dpkgCache = { mtime: fs.statSync(DPKG_STATUS).mtimeMs, data: result };
   return result;
 }
 
 export function dpkgHasPackage(name: string): boolean {
-  return sqlDpkgHas(name);
+  return readDpkgStatus().has(name);
 }
 
 const ARCH_MAP: Record<string, string> = {
@@ -85,6 +102,7 @@ export function writeDpkgEntry(pkg: InstalledPackage): void {
   kept = kept.filter((e: string) => e.trim() !== '');
   kept.push(entry.join('\n'));
   fs.writeFileSync(DPKG_STATUS, kept.join('\n\n') + '\n');
+  _dpkgCache = null; // invalidate cache
 
   if (fs.existsSync(DPKG_INFO)) {
     const lp = `${DPKG_INFO}/${pkg.name}.list`;
@@ -93,8 +111,6 @@ export function writeDpkgEntry(pkg: InstalledPackage): void {
       : [];
     fs.writeFileSync(lp, [...new Set([...existing, ...pkg.files])].sort().join('\n') + '\n');
   }
-  upsertDpkgEntry(pkg.name, pkg.version, toDpkgArch(pkg.architecture), pkg.description || '', pkg.installedSize || 0);
-  syncDpkgCache();
 }
 
 export function removeDpkgEntry(name: string): void {
@@ -107,8 +123,7 @@ export function removeDpkgEntry(name: string): void {
     return true;
   });
   fs.writeFileSync(DPKG_STATUS, kept.join('\n\n') + '\n');
-  removeDpkgCacheEntry(name);
-  syncDpkgCache();
+  _dpkgCache = null;
 
   const lp = `${DPKG_INFO}/${name}.list`;
   if (fs.existsSync(lp)) fs.unlinkSync(lp);
