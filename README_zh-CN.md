@@ -1,45 +1,49 @@
 # pacman-debian
 
-一个采用 Arch Linux pacman 命令行语法的包管理器，直接操作 Debian/Ubuntu 的 `.deb` 包。它在 dpkg 层面管理软件包——绕过 APT——同时也支持原生 Arch Linux 的 `.pkg.tar.zst` 包。
+一个采用 Arch Linux pacman 命令行语法的包管理器，直接操作 Debian/Ubuntu `.deb`
+包。它在 dpkg 层面管理包（绕过 APT），同时也支持原生 Arch Linux `.pkg.tar.zst`
+包（通过内置 libalpm 兼容 yay 实现 AUR 支持）。
 
 ## 目标
 
-- 在基于 Debian 的系统上提供一致的 pacman 风格的包管理 CLI。
-- 消除在 `apt`、`dpkg` 和各种前端之间切换的概念开销。
-- 支持在单一工具中组合 Debian/Ubuntu 和 Arch Linux 仓库的多仓库配置。
-- 保持与 dpkg 数据库（`/var/lib/dpkg/status`）的完全兼容，允许与 APT 及其他 dpkg 前端共存。
+- 在基于 Debian 的系统上提供一致的 pacman 风格 CLI，消除 `apt`、`dpkg` 及
+  各种前端之间的切换成本。
+- 在单一工具下支持多仓库混合配置（Debian/Ubuntu + Arch Linux 仓库）。
+- 与 dpkg 数据库（`/var/lib/dpkg/status`）完全兼容，可与 APT 及其他 dpkg
+  前端共存。
+- 提供 libalpm ABI 兼容的共享库，使基于 Go 的 AUR 助手（yay）无需修改即可
+  在 Debian 上运行。
 
-## 非目标
+## 环境要求
 
-- 取代 APT 或 dpkg 作为系统包管理器。
-- 实现 AUR 支持或任何特定于 Arch Linux 的构建系统集成。
-- 提供可与 APT 高级解析器相媲美的完整依赖解析器。
-
-## 系统要求
-
-- Node.js 18+（TypeScript，使用 `tsc` 编译）
-- Debian 12 Bookworm（或兼容的基于 Debian 的发行版）
+- Node.js 18+（TypeScript，通过 `tsc` 编译）
+- pnpm 包管理器
+- Debian 12 Bookworm（或兼容的 Debian 发行版），aarch64/arm64 架构
 - 安装、删除和升级操作需要 root 权限
+- 编译工具：`gcc`、`make`、`ldconfig`
 
 ## 快速开始
 
 ```bash
-# 编译
+# 编译 TypeScript + C 库
 pnpm install && pnpm build
 
-# 安装为系统命令
+# 运行交互式安装（创建配置、符号链接、dpkg 条目）
+sudo node dist/scripts/setup.js
+
+# 或手动设置：
 sudo ln -sf "$PWD/dist/cli/pacman.js" /usr/local/bin/pacman
 
 # 同步仓库
 sudo pacman -Sy
 
-# 搜索软件包
+# 搜索包
 pacman -Ss neofetch
 
 # 安装
 sudo pacman -S neofetch
 
-# 升级所有软件包
+# 升级所有包
 sudo pacman -Syu
 
 # 删除
@@ -50,110 +54,332 @@ sudo pacman -R neofetch
 
 配置文件：`/etc/pacman-debian/pacman.conf`
 
-如果文件不存在，默认配置使用 `ports.ubuntu.com` 的 Ubuntu Noble (24.04) ARM64 仓库。配置示例：
+配置使用纯 Arch Linux pacman 语法，支持 `Include` 指令。仓库特有键
+（`Type`、`Dist`、`Components` 等）放在 `/etc/pacman.d/` 的包含文件中。
+
+配置示例：
 
 ```ini
 [options]
 Architecture = arm64
 
-[ubuntu]
-Type = debian
-Server = http://ports.ubuntu.com/ubuntu-ports
-Dist = noble
-Components = main universe
+[bookworm]
+Include = /etc/pacman.d/debian-bookworm
 
-[arch]
-Type = arch
-Server = https://mirror.example.com/archlinux
+[extra]
+Include = /etc/pacman.d/arch-extra
 ```
+
+包含文件示例（`/etc/pacman.d/debian-bookworm`）：
+
+```
+Server = https://mirrors.tuna.tsinghua.edu.cn/debian
+Type = debian
+Dist = bookworm
+Components = main contrib non-free non-free-firmware
+```
+
+Arch 仓库的包含文件（`/etc/pacman.d/arch-extra`）：
+
+```
+Server = http://mirror.archlinuxarm.org/$arch/$repo
+Type = arch
+Architecture = aarch64
+```
+
+安装时会创建 `/etc/pacman.conf` → `/etc/pacman-debian/pacman.conf` 符号链接，
+以便硬编码该路径的工具（如 yay）正常工作。
+
+使用 `pacman-conf` 查看解析后的配置（所有 `Include` 文件已展开，
+`$repo`/`$arch` 变量已替换）：
+
+```bash
+$ pacman-conf
+# pacman-debian configuration
+[options]
+Architecture = arm64
+
+[bookworm]
+Server = https://mirrors.tuna.tsinghua.edu.cn/debian
+Type = debian
+Dist = bookworm
+Components = main contrib non-free non-free-firmware
+
+[extra]
+Server = http://mirror.archlinuxarm.org/$arch/$repo
+Type = arch
+Architecture = aarch64
+```
+
+## 数据库
+
+### 本地数据库：`/var/lib/pacman-debian/local/`
+
+采用与 Arch Linux 本地 DB 一致的目录-包格式：
+
+```
+/var/lib/pacman-debian/local/
+├── by-name/
+│   ├── fastfetch -> ../fastfetch-2.64.2-2/
+│   └── ...
+├── fastfetch-2.64.2-2/
+│   ├── desc          # JSON 元数据（名称、版本、依赖、大小等）
+│   └── files         # 文件清单
+└── ...
+```
+
+### dpkg 兼容
+
+通过 `dpkg` 或 `apt` 安装的包在查询时直接从 `/var/lib/dpkg/status` 读取
+（按 mtime 缓存）。`pacman-debian` 安装包时会同时写入 dpkg 兼容的条目，
+确保 `apt` 和 `dpkg` 仍能识别该包。
+
+### 仓库缓存：`/var/cache/pacman-debian/packages/`
+
+每个仓库以 JSON Lines 块形式缓存（每个 `.jsonl` 文件 5000 个包），
+无需将全部数据加载到内存即可快速查找单个包。
+
+单包操作如 `-S <pkg>` 使用 `findInRepo()` — 在目标 JSONL 块上进行原生
+Node.js 逐行扫描。由于每行都是一个完整的 JSON 对象，扫描可在
+O(N/分块数) 时间内找到目标包，无需解析其余 15 MB 数据。
+
+列表操作（`-Sl`、`-Ss`、`-Su`）需要全量解析所有 JSONL 块，因为需要
+获取每个包的信息。
 
 ## 仓库支持
 
 - **Debian/Ubuntu**：从标准仓库索引读取 `Packages.gz` / `Packages.xz`。
-- **Arch Linux**：从兼容的 Arch 仓库读取 `db.tar.gz`。下载的 `.pkg.tar.zst` 文件使用 `zstd` 解压后直接安装。
+  支持 `Server` URL 中的 `$repo`/`$arch` 变量替换。
+- **Arch Linux**：从 Arch 兼容仓库读取 `db.tar.gz`。下载的 `.pkg.tar.zst`
+  文件会被解包并安装。
+- **Arch ARM**：二进制包需要 glibc 2.38+ — Debian 12 自带 glibc 2.36，
+  因此在 Bookworm 上 Arch ARM 二进制仓库**无法使用**（升级 glibc 会损坏系统）。
+  请改用 `makepkg` 进行本地编译。
 
-## 数据库
+## libalpm（libpac4deb）
 
-- 自有数据库：`/var/lib/pacman-debian/status.json`
-- dpkg 兼容：向 `/var/lib/dpkg/status` 写入条目，实现与 APT 和 `dpkg` 命令的互操作。
-- 已安装包文件索引：`/var/lib/pacman-debian/file-index.json`（用于 `-Qo`）
+位于 `lib/pac4deb/` 的 C 库，实现了 libalpm ABI（`alpm.h`），使基于 Go 的
+AUR 助手（如 yay）无需修改即可在 Debian 上运行。它读取：
+
+- 本地数据库（`/var/lib/pacman-debian/local/`）— pacman-debian 安装的包
+- dpkg 状态（`/var/lib/dpkg/status`）— apt/dpkg 的系统包
+- 同步数据库（`/var/cache/pacman-debian/packages/*/` — JSONL 块）
+
+提供了 200+ 个不常用函数的桩实现。
+
+## makepkg（`src/makepkg/`）
+
+独立的 `makepkg` 实现，无需 `base-devel` 或任何 Arch 工具即可从 PKGBUILD
+构建 Arch Linux 包。
+
+```bash
+# 从 PKGBUILD 构建包
+cd /path/to/PKGBUILD/dir
+makepkg --syncdeps --install
+```
+
+功能：
+
+- 通过 bash sourcing（`source PKGBUILD`）解析 PKGBUILD — 支持所有标准变量
+  （`pkgname`、`pkgver`、`source`、`depends`、`makedepends`、
+  `sha256sums` 等）
+- 下载并验证源文件（支持 http/https URL，带校验和验证）
+- 解压归档：`.tar.gz`、`.tar.xz`、`.tar.bz2`、`.tar.zst`、`.zip`
+- 在干净的环境中运行 `prepare()`、`build()`、`check()` 和 `package()` 函数
+- 创建带有有效 `.PKGINFO` 元数据的 `.pkg.tar.zst` 归档
+- 通过 `--syncdeps` 进行依赖解析 — 通过 pacman-debian 的同步数据库
+  （Debian 和 Arch 仓库）安装缺失依赖
+- 支持 `--install`（`-i`）、`--clean`（`-c`）、`--rmdeps`
+
+| 参数 | 说明 |
+|------|------|
+| `-s, --syncdeps` | 通过 pacman 安装缺失依赖 |
+| `-i, --install` | 安装构建好的包 |
+| `-c, --clean` | 打包后清理构建文件 |
+| `-r, --rmdeps` | 构建后删除已安装的依赖 |
+| `-f, --force` | 覆盖已有的包文件 |
+| `-o, --nobuild` | 仅下载和解压源码（不构建） |
+| `--nocolor` | 禁用彩色输出 |
+| `--printsrcinfo` | 打印 `.SRCINFO` 并退出 |
 
 ## 命令
 
-### 同步 (-S)
+### 同步（-S）
 
 | 命令 | 说明 |
 |------|------|
-| `pacman -S <pkg>` | 从仓库安装软件包 |
-| `pacman -Sy` | 刷新软件包数据库 |
-| `pacman -Syy` | 强制刷新软件包数据库 |
-| `pacman -Su` | 升级所有已安装的软件包 |
+| `pacman -S <pkg>` | 从仓库安装包 |
+| `pacman -Sy` | 刷新包数据库（mtime 检查，24 小时） |
+| `pacman -Syy` | 强制刷新包数据库 |
+| `pacman -Su` | 升级所有已安装的包 |
 | `pacman -Syu` | 刷新数据库并升级 |
 | `pacman -Ss <keyword>` | 搜索仓库 |
-| `pacman -Si <pkg>` | 显示远程软件包信息 |
-| `pacman -Sl` | 列出仓库中的所有软件包 |
-| `pacman -Sw <pkg>` | 下载软件包但不安装 |
-| `pacman -Sc` | 删除未使用的缓存软件包 |
-| `pacman -Scc` | 删除所有缓存软件包 |
-| `pacman -Sp <pkg>` | 预览要安装的软件包（模拟运行） |
+| `pacman -Si <pkg>` | 显示远程包信息 |
+| `pacman -Sl` | 列出仓库中所有包 |
+| `pacman -Sw <pkg>` | 只下载不安装 |
+| `pacman -Sc` | 删除未使用的缓存包 |
+| `pacman -Scc` | 删除所有缓存（含仓库数据） |
+| `pacman -Sp <pkg>` | 打印将要安装的内容（干运行） |
 
-### 删除 (-R)
-
-| 命令 | 说明 |
-|------|------|
-| `pacman -R <pkg>` | 删除软件包 |
-| `pacman -Rs <pkg>` | 删除软件包及其未使用的依赖 |
-| `pacman -Rns <pkg>` | 删除软件包、依赖并跳过脚本 |
-| `pacman -Rc <pkg>` | 级联删除：删除依赖于目标包的包 |
-| `pacman -Rdd <pkg>` | 删除时跳过依赖检查 |
-| `pacman -Rp <pkg>` | 预览要删除的软件包（模拟运行） |
-
-### 查询 (-Q)
+### 删除（-R）
 
 | 命令 | 说明 |
 |------|------|
-| `pacman -Q` | 列出所有已安装的软件包 |
-| `pacman -Qe` | 列出显式安装的软件包 |
-| `pacman -Qd` | 列出作为依赖安装的软件包 |
-| `pacman -Qdt` | 列出孤儿软件包（未使用的依赖） |
-| `pacman -Qi <pkg>` | 显示详细的软件包信息 |
-| `pacman -Ql <pkg>` | 列出软件包拥有的文件 |
-| `pacman -Qo <file>` | 查询文件属于哪个软件包 |
-| `pacman -Qs <keyword>` | 搜索已安装的软件包 |
-| `pacman -Qk [pkg]` | 验证已安装软件包的文件完整性 |
+| `pacman -R <pkg>` | 删除包 |
+| `pacman -Rs <pkg>` | 删除包及未使用的依赖 |
+| `pacman -Rns <pkg>` | 删除包、依赖并跳过脚本 |
+| `pacman -Rc <pkg>` | 级联删除：删除依赖该包的所有包 |
+| `pacman -Rdd <pkg>` | 跳过依赖检查强制删除 |
+| `pacman -Rp <pkg>` | 打印将要删除的内容（干运行） |
+
+### 查询（-Q）
+
+| 命令 | 说明 |
+|------|------|
+| `pacman -Q` | 列出所有已安装的包 |
+| `pacman -Qe` | 列出显式安装的包 |
+| `pacman -Qd` | 列出作为依赖安装的包 |
+| `pacman -Qdt` | 列出孤儿包（未使用的依赖） |
+| `pacman -Qi <pkg>` | 显示详细包信息 |
+| `pacman -Ql <pkg>` | 列出包拥有的文件 |
+| `pacman -Qo <file>` | 查询文件属于哪个包 |
+| `pacman -Qs <keyword>` | 搜索已安装的包 |
+| `pacman -Qk [pkg]` | 验证已安装包的文件完整性 |
 
 ### 其他
 
 | 命令 | 说明 |
 |------|------|
-| `pacman -U <file>` | 安装本地软件包文件 |
-| `pacman -D --asdeps <pkg>` | 将软件包标记为依赖 |
-| `pacman -D --asexplicit <pkg>` | 将软件包标记为显式安装 |
+| `pacman -U <file>` | 安装本地包文件（.deb/.pkg.tar.zst） |
+| `pacman -D --asdeps <pkg>` | 将包标记为依赖 |
+| `pacman -D --asexplicit <pkg>` | 将包标记为显式安装 |
 | `pacman -T <pkg>` | 检查依赖是否满足 |
-| `pacman -F <file>` | 搜索哪个软件包提供某个文件 |
-| `pacman -V` | 显示版本信息 |
+| `pacman -F <file>` | 搜索提供该文件的包 |
+| `pacman -V` | 显示版本号 |
 
-### 全局标志
+### 内置工具
 
-| 标志 | 说明 |
+| 命令 | 说明 |
+|------|------|
+| `pacman-conf` | 打印解析后的配置（类似 Arch 的 `pacman-conf`）。查看每个仓库的 Server URL、Type、Dist、Components。 |
+| `makepkg` | 从 PKGBUILD 文件构建 Arch Linux 包。支持 `--syncdeps`、`--install`、`--clean`、源码下载和 `.pkg.tar.zst` 创建。 |
+| `pacman-debian-setup` | 交互式安装：创建配置、Include 文件、符号链接（`/etc/pacman.conf`、`/usr/local/bin/pacman`）和虚拟 `pacman` dpkg 条目。 |
+
+### 全局参数
+
+| 参数 | 说明 |
 |------|------|
 | `--noconfirm` | 跳过确认提示 |
 | `--confirm` | 始终询问确认（默认） |
-| `--needed` | 不重新安装已是最新的软件包 |
+| `--needed` | 不重新安装已是最新的包 |
 | `--noscriptlet` | 不执行安装脚本 |
-| `--print` | 模拟运行：显示将要执行的操作而不实际执行 |
+| `--print` | 干运行：显示将要执行的操作但不实际执行 |
+
+## 依赖引擎
+
+依赖解析器（`src/core/deps.ts`）支持：
+
+- 带版本约束的包名解析（`>=`、`<=`、`=`）
+- OR 依赖（`|`）
+- 架构限定符（`:arm64`）
+- Debian（逗号分隔）和 Arch（空格分隔）两种格式
+- 带预加载 DB 状态的 BFS 解析
+- 已安装和待安装包之间的冲突检测
+- 系统包保护（glibc、libc6 等）
+
+版本比较委托给 `dpkg --compare-versions`，带有数字/字符串回退。
 
 ## 架构
 
 ```
 src/
 ├── cli/pacman.ts       # CLI 参数解析和分发
-├── core/               # 包格式解析器 (ar, tar, control, deb, Arch .PKGINFO)
-├── db/                 # 本地数据库 (status.json, file-index.json) 和 dpkg 兼容层
-├── ops/                # 操作：安装、删除、查询、升级
-├── repo/               # 仓库同步 (Debian Packages.gz, Arch db.tar.gz) 和配置
-└── ui/                 # 用户界面 (提示、格式化)
+├── core/               # 包格式解析器、依赖引擎
+│   ├── ar.ts           # ar 归档解析器
+│   ├── tar.ts          # tar 提取器
+│   ├── deb.ts          # .deb 包解析器
+│   ├── pkgfile.ts      # .pkg.tar.zst 解析器
+│   ├── compress.ts     # gz/xz 解压缩
+│   ├── control.ts      # Debian control 文件解析器
+│   └── deps.ts         # 依赖解析引擎
+├── db/
+│   ├── localdb.ts      # 目录式本地包数据库
+│   ├── database.ts     # 带事务的 DB 封装
+│   └── dpkg-compat.ts  # dpkg 状态文件读写
+├── ops/
+│   ├── install.ts      # 包安装
+│   ├── remove.ts       # 包删除
+│   ├── query.ts        # 所有 -Q 查询
+│   └── upgrade.ts      # 同步 + 升级流程
+├── repo/
+│   ├── repository.ts   # 仓库同步、下载、JSONL 缓存
+│   └── config.ts       # pacman.conf 解析器（支持 Include）
+├── scripts/
+│   └── setup.ts        # 交互式安装脚本
+├── makepkg/
+│   ├── index.ts        # makepkg 主入口
+│   ├── pkgbuild.ts     # PKGBUILD 解析器
+│   ├── source.ts       # 源码下载/解压
+│   ├── build.ts        # build()/package() 执行
+│   └── printsrcinfo.ts # .SRCINFO 生成
+├── ui/                 # 用户界面（提示、格式化）
+└── index.ts            # 入口
 ```
+
+## libalpm C 库
+
+```
+lib/pac4deb/
+├── Makefile            # 用 gcc 构建，目标 libalpm.so
+├── include/
+│   ├── alpm.h          # 公共 libalpm API 头文件
+│   └── alpm_list.h     # 链表头文件
+└── src/
+    ├── libalpm.c       # 核心实现（handle、db、pkg、JSON 解析器）
+    ├── stubs_manual.c  # ~200 个不常用 libalpm 函数的桩实现
+    └── alpm_list.c     # 链表实现
+```
+
+构建：`make -C lib/pac4deb`
+安装：`sudo make -C lib/pac4deb install`
+
+## yay / AUR 支持
+
+通过内置 libalpm，`yay` 可与 `pacman-debian` 配合使用：
+
+```bash
+# 安装 yay（需要 Go）
+sudo apt install golang-go
+git clone https://aur.archlinux.org/yay.git /tmp/yay
+cd /tmp/yay && go build -o /usr/local/bin/yay
+
+# 与 pacman-debian 配合使用
+PACMAN=/usr/local/bin/pacman yay -Ss ponysay
+PACMAN=/usr/local/bin/pacman sudo -E yay -S ponysay
+```
+
+注意：依赖 `python`（而非 `python3`）的 AUR 包在 Debian 12 上无法解析，
+因为系统包名是 `python3`。安装 `python-is-python3` 或创建符号链接可解决。
+
+## 构建
+
+```bash
+pnpm install
+pnpm build                # tsc + C 库
+# 或分步执行：
+pnpm exec tsc
+make -C lib/pac4deb       # 构建 libalpm.so
+```
+
+## 项目状态
+
+该项目在 v7.1.0 时更名为 `pacman-debian`。目前在 aarch64 Debian 12 上
+可用于日常包管理。主要限制：
+
+- **Arch ARM 二进制仓库需要 glibc 2.38+** — Debian 12 自带 2.36。
+  本地 `makepkg` 构建可正常使用。
+- **yay 依赖解析**可在同步数据库中工作，但在复杂 AUR 依赖链上可能失败。
+- **AUR 助手集成**仅测试了 yay（paru、pamac 等未测试）。
 
 ## 许可证
 
