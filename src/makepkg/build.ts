@@ -151,7 +151,8 @@ export async function buildPkgbuild(options: BuildOptions): Promise<string> {
     console.log('  :: Downloading sources...');
     for (const src of info.source) {
       const filename = getSourceFilename(src);
-      if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('ftp://')) {
+      const srcUrl = getSourceURL(src);
+      if (srcUrl.startsWith('http://') || srcUrl.startsWith('https://') || srcUrl.startsWith('ftp://')) {
         const file = downloadSource(src, srcdir);
         sourceFiles.push(file);
         console.log(`    ${filename}... done`);
@@ -212,7 +213,7 @@ export async function buildPkgbuild(options: BuildOptions): Promise<string> {
   }
 
   // --- Build script ---
-  const buildScript = path.join(os.tmpdir(), `makepkg-${info.pkgname}.sh`);
+  const buildScript = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'makepkg-')), `${info.pkgname}.sh`);
   try {
     const scriptLines: string[] = [
       '#!/bin/bash',
