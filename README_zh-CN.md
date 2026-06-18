@@ -18,7 +18,7 @@
 
 - Node.js 18+（TypeScript，通过 `tsc` 编译）
 - pnpm 包管理器
-- Debian 12 Bookworm（或兼容的 Debian 发行版），aarch64/arm64 架构
+- Debian 12 Bookworm（或兼容的 Debian 发行版）
 - 安装、删除和升级操作需要 root 权限
 - 编译工具：`gcc`、`make`、`ldconfig`
 
@@ -373,7 +373,7 @@ make -C lib/pac4deb       # 构建 libalpm.so
 
 ## 项目状态
 
-该项目在 v7.1.0 时更名为 `pacman-debian`。目前在 aarch64 Debian 12 上
+该项目在 v7.1.0 时更名为 `pacman-debian`。目前在 Debian 12 上
 可用于日常包管理。主要限制：
 
 - **Arch ARM 二进制仓库需要 glibc 2.38+** — Debian 12 自带 2.36。

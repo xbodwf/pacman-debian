@@ -21,7 +21,7 @@ packages (including AUR compatibility via yay with a bundled libalpm).
 
 - Node.js 18+ (TypeScript, compiled with `tsc`)
 - pnpm package manager
-- Debian 12 Bookworm (or compatible Debian-based distribution) on aarch64/arm64
+- Debian 12 Bookworm (or compatible Debian-based distribution)
 - Root privileges for install, remove, and upgrade operations
 - Build essentials: `gcc`, `make`, `ldconfig`
 
@@ -389,7 +389,7 @@ make -C lib/pac4deb       # Build libalpm.so
 ## Project Status
 
 This project was renamed to `pacman-debian` at v7.1.0. It is functional for
-day-to-day package management on aarch64 Debian 12. Key limitations:
+day-to-day package management on Debian 12. Key limitations:
 
 - **Arch ARM binary repos require glibc 2.38+** — Debian 12 ships 2.36.
   Local `makepkg` builds work fine.
