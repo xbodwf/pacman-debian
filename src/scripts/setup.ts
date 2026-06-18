@@ -204,6 +204,8 @@ async function main() {
   console.log('  2. Run sudo pacman -Sy to sync');
   console.log('  3. Run sudo pacman -S <package> to install');
   console.log('  4. Run makepkg in a directory with PKGBUILD to build packages');
+  console.log('  5. For AUR helper support, build and install libalpm:');
+  console.log('       cd lib/pac4deb && make && sudo make install');
 }
 
 main().catch(e => {
