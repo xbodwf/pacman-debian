@@ -171,7 +171,6 @@ export async function syncRepos(force: boolean = false): Promise<void> {
   const cols = process.stdout.columns || 80;
 
   for (const repo of cfg.repos) {
-    // Check if we already have a cache file
     const cacheFile = path.join(PKG_CACHE, `${repo.name}.json`);
     let ifModifiedSince: string | undefined;
 
