@@ -61,6 +61,15 @@ function formatDescription(desc?: string): string | undefined {
   return `Description: ${first}\n${rest}`;
 }
 
+const ARCH_MAP: Record<string, string> = {
+  aarch64: 'arm64', x86_64: 'amd64', i686: 'i386',
+  armv7h: 'armhf', armv6h: 'armhf', riscv64: 'riscv64',
+};
+
+function toDpkgArch(arch: string): string {
+  return ARCH_MAP[arch] || arch;
+}
+
 export function writeDpkgEntry(pkg: InstalledPackage): void {
   if (!fs.existsSync(DPKG_STATUS)) return;
 
@@ -79,7 +88,7 @@ export function writeDpkgEntry(pkg: InstalledPackage): void {
     `Section: ${pkg.controlSection || 'misc'}`,
     `Installed-Size: ${pkg.installedSize || 0}`,
     `Maintainer: ${pkg.maintainer || 'Unknown'}`,
-    `Architecture: ${pkg.architecture}`,
+    `Architecture: ${toDpkgArch(pkg.architecture)}`,
     `Version: ${pkg.version}`,
   ];
 
