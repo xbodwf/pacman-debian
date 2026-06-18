@@ -202,9 +202,7 @@ export async function parseArgs(args: string[]): Promise<void> {
     if (doRefresh && doUpgrade) { await syncAndUpgrade(opts); return; }
     if (doRefresh) {
       console.log(':: Synchronizing package databases...');
-      await syncRepos((repo, size, count) => {
-        console.log(` ${repo.padEnd(20)}${(size ? `${(size / 1048576).toFixed(1)} MiB` : '?').padStart(10)}  ${count} packages`);
-      });
+      await syncRepos();
       return;
     }
     if (doUpgrade) { await upgradeOnly(opts); return; }

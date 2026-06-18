@@ -14,24 +14,38 @@ const PKG_CACHE = path.join(CACHE_DIR, 'packages');
 const DEB_CACHE = path.join(CACHE_DIR, 'pkg');
 
 async function downloadFile(url: string, onProgress?: (received: number, total: number) => void): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const mod = url.startsWith('https') ? https : http;
-    mod.get(url, { timeout: 60000, headers: { 'User-Agent': 'Wget/1.21' } }, (res) => {
-      if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
-        reject(new Error(`HTTP ${res.statusCode} for ${url}`));
-        return;
-      }
-      const total = parseInt(res.headers['content-length'] || '0', 10);
-      let received = 0;
-      const chunks: Buffer[] = [];
-      res.on('data', (c: Buffer) => {
-        chunks.push(c);
-        received += c.length;
-        if (onProgress) onProgress(received, total);
-      });
-      res.on('end', () => resolve(Buffer.concat(chunks)));
-    }).on('error', reject).on('timeout', function (this: any) { this.destroy(); reject(new Error('timeout')); });
-  });
+  const maxRedirects = 5;
+  const doRequest = (u: string, redirects: number): Promise<Buffer> => {
+    return new Promise((resolve, reject) => {
+      const mod = u.startsWith('https') ? https : http;
+      mod.get(u, { timeout: 60000, headers: { 'User-Agent': 'Wget/1.21' } }, (res) => {
+        if (res.statusCode && (res.statusCode >= 300 && res.statusCode < 400)) {
+          const loc = res.headers['location'];
+          if (!loc || redirects >= maxRedirects) {
+            reject(new Error(`redirect limit`));
+            return;
+          }
+          const next = loc.startsWith('http') ? loc : new URL(loc, u).href;
+          doRequest(next, redirects + 1).then(resolve, reject);
+          return;
+        }
+        if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
+          reject(new Error(`HTTP ${res.statusCode} for ${u}`));
+          return;
+        }
+        const total = parseInt(res.headers['content-length'] || '0', 10);
+        let received = 0;
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => {
+          chunks.push(c);
+          received += c.length;
+          if (onProgress) onProgress(received, total);
+        });
+        res.on('end', () => resolve(Buffer.concat(chunks)));
+      }).on('error', reject).on('timeout', function (this: any) { this.destroy(); reject(new Error('timeout')); });
+    });
+  };
+  return doRequest(url, 0);
 }
 
 function parseDebianPackages(content: string, repo: string): RepoPkg[] {
@@ -122,8 +136,8 @@ function parseArchDb(dbTar: Buffer, repo: string): RepoPkg[] {
   return pkgs;
 }
 
-async function syncArch(repo: RepoConfig, arch: string, onProgress?: (rec: number, tot: number) => void): Promise<RepoPkg[]> {
-  const url = `${repo.server}/${repo.name}/os/${arch}/${repo.name}.db.tar.gz`;
+async function syncArch(repo: RepoConfig, onProgress?: (rec: number, tot: number) => void): Promise<RepoPkg[]> {
+  const url = `${repo.server}/${repo.name}.db.tar.gz`;
   const buf = await downloadFile(url, onProgress);
   const tar = decompress(buf, 'repo.tar.gz');
   return parseArchDb(tar, repo.name);
@@ -140,7 +154,7 @@ function humanSize(n: number, dec: number): { val: string; unit: string } {
 }
 
 // ---- Main sync ----
-export async function syncRepos(onProgress?: (repo: string, size: number, count: number) => void): Promise<void> {
+export async function syncRepos(): Promise<void> {
   const cfg = loadConfig();
   if (!fs.existsSync(PKG_CACHE)) fs.mkdirSync(PKG_CACHE, { recursive: true });
   const cols = process.stdout.columns || 80;
@@ -197,7 +211,7 @@ export async function syncRepos(onProgress?: (repo: string, size: number, count:
 
     try {
       if (repo.type === 'arch') {
-        pkgs = await syncArch(repo, cfg.architecture, (rec, tot) => {
+        pkgs = await syncArch(repo, (rec, tot) => {
           totalDownloaded = rec; totalExpected = tot;
           updateProgress(false);
         });
@@ -214,6 +228,7 @@ export async function syncRepos(onProgress?: (repo: string, size: number, count:
 
       // Final line (like pacman: stays on screen)
       const elapsed = (Date.now() - startTime) / 1000;
+      const totalSec = Math.round(elapsed);
       const finalRate = elapsed > 0 ? totalDownloaded / elapsed : 0;
       const dl = humanSize(totalDownloaded, 1);
       const rateStr = (() => {
@@ -221,7 +236,7 @@ export async function syncRepos(onProgress?: (repo: string, size: number, count:
         if (finalRate < 99.95) { const s = humanSize(finalRate, 1); return `${s.val.padStart(4)} ${s.unit}/s`; }
         const s = humanSize(finalRate, 0); return `${s.val.padStart(4)} ${s.unit}/s`;
       })();
-      const etaM = Math.floor(elapsed); const etaS = Math.round((elapsed - etaM) * 60);
+      const etaM = Math.floor(totalSec / 60); const etaS = totalSec % 60;
       const barLen = Math.max(Math.floor((cols - 55) * 0.35), 8);
       const bar = '#'.repeat(barLen);
       const pad = Math.max(20 - fname.length, 1);
@@ -233,11 +248,9 @@ export async function syncRepos(onProgress?: (repo: string, size: number, count:
       if (pkgs.length === 0) {
         console.error(`  WARNING: ${repo.name} returned 0 packages (wrong architecture? check pacman.conf)`);
       }
-      if (onProgress) onProgress(repo.name, totalDownloaded, pkgs.length);
     } catch (e: any) {
       process.stdout.write(`\r ${fname}${' '.repeat(Math.max(20 - fname.length, 1))}failed to download\n`);
       console.error(`  WARNING: failed to sync ${repo.name}: ${e.message}`);
-      if (onProgress) onProgress(repo.name, 0, 0);
     }
   }
 
@@ -250,10 +263,34 @@ let _cache: RepoPkg[] | null = null;
 export function getRepoCache(): RepoPkg[] {
   if (_cache) return _cache;
   if (!fs.existsSync(PKG_CACHE)) { _cache = []; return _cache; }
+
+  const cfg = loadConfig();
+  const seen = new Set<string>();
   const all: RepoPkg[] = [];
-  for (const f of fs.readdirSync(PKG_CACHE)) {
-    if (f.endsWith('.json')) all.push(...JSON.parse(fs.readFileSync(path.join(PKG_CACHE, f), 'utf8')));
+
+  for (const repo of cfg.repos) {
+    const fp = path.join(PKG_CACHE, `${repo.name}.json`);
+    if (!fs.existsSync(fp)) continue;
+    const pkgs: RepoPkg[] = JSON.parse(fs.readFileSync(fp, 'utf8'));
+    for (const p of pkgs) {
+      if (seen.has(p.package)) continue;
+      seen.add(p.package);
+      all.push(p);
+    }
   }
+
+  for (const f of fs.readdirSync(PKG_CACHE)) {
+    if (!f.endsWith('.json')) continue;
+    const name = f.replace(/\.json$/, '');
+    if (cfg.repos.some(r => r.name === name)) continue;
+    const pkgs: RepoPkg[] = JSON.parse(fs.readFileSync(path.join(PKG_CACHE, f), 'utf8'));
+    for (const p of pkgs) {
+      if (seen.has(p.package)) continue;
+      seen.add(p.package);
+      all.push(p);
+    }
+  }
+
   _cache = all;
   return all;
 }
@@ -283,7 +320,7 @@ export async function downloadPkg(rp: RepoPkg, dest?: string): Promise<string> {
     const cfg = loadConfig();
     const repo = cfg.repos.find(r => r.name === rp.repo);
     if (!repo) throw new Error(`repo ${rp.repo} not found`);
-    url = `${repo.server}/${repo.name}/os/${cfg.architecture}/${rp.filename}`;
+    url = `${repo.server}/${rp.filename}`;
   } else {
     const cfg = loadConfig();
     const repo = cfg.repos.find(r => r.name === rp.repo);

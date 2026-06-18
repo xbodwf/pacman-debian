@@ -23,10 +23,7 @@ async function collectUpgradeCandidates(): Promise<UpgradeTarget[]> {
 
 export async function syncAndUpgrade(opts: InstallOptions = {}): Promise<void> {
   console.log(':: Synchronizing package databases...');
-  await syncRepos((repo, size, count) => {
-    const sizeStr = size > 0 ? `${(size / 1048576).toFixed(1)} MiB` : '?';
-    console.log(` ${repo.padEnd(20)}${sizeStr.padStart(10)}  ${count} packages`);
-  });
+  await syncRepos();
   await doUpgrade(opts);
 }
 
