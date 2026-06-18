@@ -4,7 +4,7 @@ import { execSync } from 'node:child_process';
 import { parseDeb, readScript } from '../core/deb';
 import { extractTar } from '../core/tar';
 import { parsePkgTarZst } from '../core/pkgfile';
-import { findInRepo, downloadPkg, getRepoCache } from '../repo/repository';
+import { findInRepo, downloadPkg } from '../repo/repository';
 import {
   initDb, loadDatabase, saveDatabase, addPackage, isInstalled, getPackage,
   saveScript, runScript, createTransaction, completeTransaction, parseDepends,
@@ -170,17 +170,21 @@ export async function installPkg(target: string, opts: InstallOptions = {}): Pro
 
 export async function installPackages(targets: string[], opts: InstallOptions = {}): Promise<number> {
   initDb();
-  const cache = getRepoCache();
-  if (cache.length === 0) {
-    console.error('error: database not synced (run pacman -Sy)');
-    return 0;
-  }
 
-  // Validate all targets exist
+  // Validate all targets exist (uses fast findInRepo, not full cache)
   const resolved: RepoPkg[] = [];
   for (const t of targets) {
     const rp = findInRepo(t);
-    if (!rp) { console.error(`error: '${t}' not found`); continue; }
+    if (!rp) {
+      // Check if cache dir exists at all
+      const cacheDir = '/var/cache/pacman-debian/packages';
+      if (!fs.existsSync(cacheDir) || fs.readdirSync(cacheDir).length === 0) {
+        console.error('error: database not synced (run pacman -Sy)');
+        return 0;
+      }
+      console.error(`error: '${t}' not found`);
+      continue;
+    }
     if (opts.needed) {
       if (dpkgHasPackage(t) || isInstalled(loadDatabase(), t)) {
         console.log(`  ${t} is up to date`);
