@@ -1,14 +1,17 @@
 {
   "name": "pacman-debian",
   "version": "1.0.0",
-  "description": "",
+  "description": "pacman-syntax package manager for Debian/Ubuntu with Arch repo support",
   "main": "dist/index.js",
   "bin": {
-    "pacman": "./dist/index.js"
+    "pacman": "./dist/index.js",
+    "pacman-debian-setup": "./dist/scripts/setup.js"
   },
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js"
+    "setup": "node dist/scripts/setup.js",
+    "start": "node dist/index.js",
+    "postinstall": "node dist/scripts/setup.js"
   },
   "keywords": [],
   "author": "",

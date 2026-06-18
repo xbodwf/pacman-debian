@@ -60,7 +60,7 @@ export interface RepoPkg {
 
 export interface RepoConfig {
   name: string;
-  type: 'debian' | 'arch';
+  type?: 'debian' | 'arch';
   server: string;
   dist?: string;
   components?: string[];
