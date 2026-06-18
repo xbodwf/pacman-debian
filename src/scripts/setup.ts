@@ -22,8 +22,14 @@ function ask(query: string, defaultYes = true): Promise<boolean> {
 
 async function main() {
   if (process.getuid && process.getuid() !== 0) {
-    console.error('error: setup must be run as root (sudo)');
-    process.exit(1);
+    console.log(':: pacman-debian setup');
+    console.log('');
+    console.log('  This script needs root to create symlinks and config files.');
+    console.log('  Run with sudo:');
+    console.log('    sudo npm run setup');
+    console.log('    sudo pacman-debian-setup');
+    console.log('');
+    return;
   }
 
   console.log(':: pacman-debian setup\n');
