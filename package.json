@@ -2,6 +2,7 @@
   "name": "pacman-debian",
   "version": "1.0.0",
   "description": "pacman-syntax package manager for Debian/Ubuntu with Arch repo support",
+  "pacmanVersion": "7.1.0",
   "main": "dist/index.js",
   "bin": {
     "pacman": "./dist/index.js",

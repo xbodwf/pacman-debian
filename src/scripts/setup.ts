@@ -6,6 +6,15 @@ import * as readline from 'node:readline';
 const CONFIG_DIR = '/etc/pacman-debian';
 const CONFIG_PATH = path.join(CONFIG_DIR, 'pacman.conf');
 const SYMLINK_PATH = '/etc/pacman';
+const DPKG_STATUS = '/var/lib/dpkg/status';
+
+function getPacmanVersion(): string {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    return pkg.pacmanVersion || '7.1.0';
+  } catch { return '7.1.0'; }
+}
 
 function ask(query: string, defaultYes = true): Promise<boolean> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -153,6 +162,32 @@ async function main() {
         console.log(`  Created: ${linkPath} → ${target}`);
       }
     }
+  }
+
+  // --- Virtual pacman package for AUR tool compatibility ---
+  const pacVersion = getPacmanVersion();
+  const hasPacmanPkg = fs.existsSync(DPKG_STATUS) &&
+    fs.readFileSync(DPKG_STATUS, 'utf8').includes('\nPackage: pacman\n');
+
+  if (!hasPacmanPkg) {
+    if (await ask(`Create virtual pacman package (v${pacVersion}) in dpkg status?`, true)) {
+      const entry = [
+        `Package: pacman`,
+        `Status: install ok installed`,
+        `Priority: optional`,
+        `Section: base`,
+        `Installed-Size: 1`,
+        `Maintainer: pacman-debian`,
+        `Architecture: ${process.arch === 'arm64' ? 'arm64' : 'amd64'}`,
+        `Version: ${pacVersion}`,
+        `Description: Virtual package provided by pacman-debian`,
+        ``,
+      ].join('\n');
+      fs.appendFileSync(DPKG_STATUS, '\n' + entry);
+      console.log(`  Created virtual pacman package v${pacVersion} in dpkg status`);
+    }
+  } else {
+    console.log(`  Virtual pacman package already exists in dpkg status`);
   }
 
   console.log('');
