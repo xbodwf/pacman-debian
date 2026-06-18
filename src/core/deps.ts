@@ -1,7 +1,7 @@
 import { execSync } from 'node:child_process';
 import { findInRepo, getRepoCache } from '../repo/repository';
+import { loadDatabase } from '../db/database';
 import { readDpkgStatus, dpkgHasPackage } from '../db/dpkg-compat';
-import { loadDatabase, isInstalled } from '../db/database';
 import type { RepoPkg } from './types';
 
 export interface Dep {
@@ -79,19 +79,33 @@ function checkVersion(installed: string, operator: string, required: string): bo
   }
 }
 
-/* ---- Check if dep is satisfied ---- */
-function isDepSatisfied(dep: Dep): boolean {
-  // Check our local DB
-  const db = loadDatabase();
-  const local = db.packages.get(dep.name);
+/* ---- Fast path: pre-load DBs once ---- */
+interface DepState {
+  localPkgs: Map<string, string>;  // name → version
+  dpkgPkgs: Map<string, string>;
+  repoCache: RepoPkg[] | null;
+}
 
-  // Check dpkg
+let _state: DepState | null = null;
+
+function getState(): DepState {
+  if (_state) return _state;
+  const local = loadDatabase();
+  const localMap = new Map<string, string>();
+  for (const [n, p] of local.packages) localMap.set(n, p.version);
+
   const dpkg = readDpkgStatus();
-  const fromDpkg = dpkg.get(dep.name);
+  const dpkgMap = new Map<string, string>();
+  for (const [n, p] of dpkg) dpkgMap.set(n, p.version);
 
-  const installedVer = local?.version || fromDpkg?.version;
-  if (!installedVer) return false; // not installed
+  _state = { localPkgs: localMap, dpkgPkgs: dpkgMap, repoCache: null };
+  return _state;
+}
 
+/* ---- Check if dep is satisfied ---- */
+function isDepSatisfied(dep: Dep, state: DepState): boolean {
+  const installedVer = state.localPkgs.get(dep.name) || state.dpkgPkgs.get(dep.name);
+  if (!installedVer) return false;
   if (dep.operator && dep.version) {
     return checkVersion(installedVer, dep.operator, dep.version);
   }
@@ -99,14 +113,12 @@ function isDepSatisfied(dep: Dep): boolean {
 }
 
 /* ---- Find provider in repo ---- */
-function findProvider(name: string): RepoPkg | undefined {
-  // Direct match
+function findProvider(name: string, state: DepState): RepoPkg | undefined {
   const direct = findInRepo(name);
   if (direct) return direct;
 
-  // Search provides field
-  const cache = getRepoCache();
-  return cache.find(p => {
+  if (!state.repoCache) state.repoCache = getRepoCache();
+  return state.repoCache.find(p => {
     const provides = p.provides || '';
     return provides.split(',').some(pr => {
       const pn = pr.trim().split(/[<>=]/)[0].trim();
@@ -117,6 +129,7 @@ function findProvider(name: string): RepoPkg | undefined {
 
 /* ---- Full dependency resolution ---- */
 export function resolveDeps(targets: string[]): { install: DepResult[]; errors: string[] } {
+  const state = getState();
   const install: DepResult[] = [];
   const errors: string[] = [];
   const seen = new Set<string>();
@@ -127,11 +140,9 @@ export function resolveDeps(targets: string[]): { install: DepResult[]; errors: 
     if (seen.has(name)) continue;
     seen.add(name);
 
-    // Check if installed
-    if (isDepSatisfied({ name })) continue;
+    if (isDepSatisfied({ name }, state)) continue;
 
-    // Find provider
-    const rp = findProvider(name);
+    const rp = findProvider(name, state);
     if (!rp) {
       errors.push(`'${name}' not found`);
       continue;
@@ -142,10 +153,9 @@ export function resolveDeps(targets: string[]): { install: DepResult[]; errors: 
       install.push({ pkg: rp, needed: true, reason: 'target' });
     }
 
-    // Process dependencies
     const deps = parseDepList(rp.depends);
     for (const d of deps) {
-      if (!seen.has(d.name) && !isDepSatisfied(d)) {
+      if (!seen.has(d.name) && !isDepSatisfied(d, state)) {
         toProcess.push(d.name);
       }
     }
@@ -153,6 +163,8 @@ export function resolveDeps(targets: string[]): { install: DepResult[]; errors: 
 
   return { install, errors };
 }
+
+export function invalidateDepCache(): void { _state = null; }
 
 function parseDepList(s?: string): Dep[] {
   if (!s) return [];
