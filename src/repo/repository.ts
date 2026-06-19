@@ -3,13 +3,14 @@ import * as path from 'node:path';
 import * as https from 'node:https';
 import * as http from 'node:http';
 import * as zlib from 'node:zlib';
-import * as readline from 'node:readline';
+import { cursorTo, clearLine } from 'node:readline';
 import { loadConfig } from './config';
 import { parseControlFile } from '../core/control';
 import { decompress } from '../core/compress';
 import { iterateTar, readFileFromTar } from '../core/tar';
 import { parseDescFile } from '../core/pkgfile';
 import type { RepoPkg, RepoConfig } from '../core/types';
+import { color } from '../ui/colors';
 
 const CACHE_DIR = '/var/cache/pacman-debian';
 const PKG_CACHE = path.join(CACHE_DIR, 'packages');
@@ -169,130 +170,182 @@ function humanSize(n: number, dec: number): { val: string; unit: string } {
   return { val: v.toFixed(dec), unit: u };
 }
 
+function formatRate(rate: number): string {
+  if (rate < 9.995) { const s = humanSize(rate, 2); return `${s.val.padStart(4)} ${s.unit}/s`; }
+  if (rate < 99.95) { const s = humanSize(rate, 1); return `${s.val.padStart(4)} ${s.unit}/s`; }
+  const s = humanSize(rate, 0); return `${s.val.padStart(4)} ${s.unit}/s`;
+}
+
+function formatETA(eta: number): string {
+  if (eta <= 0 || eta >= 7200) return '--:--';
+  return `${String(Math.floor(eta / 60)).padStart(2, '0')}:${String(Math.floor(eta % 60)).padStart(2, '0')}`;
+}
+
+function drawProgressBar(pct: number, cols: number): string {
+  const barLen = Math.max(Math.floor((cols - 55) * 0.35), 8);
+  const hashes = Math.round(pct / 100 * barLen);
+  return '#'.repeat(hashes) + '-'.repeat(Math.max(barLen - hashes, 0));
+}
+
 // ---- Main sync ----
 export async function syncRepos(force: boolean = false): Promise<void> {
   const cfg = loadConfig();
   if (!fs.existsSync(PKG_CACHE)) fs.mkdirSync(PKG_CACHE, { recursive: true });
   const cols = process.stdout.columns || 80;
+  const isTTY = process.stdout.isTTY;
 
-  for (const repo of cfg.repos) {
-    const cacheFile = path.join(PKG_CACHE, `${repo.name}.json`);
+  type RepoState = {
+    repo: RepoConfig;
+    fname: string;
+    totalDownloaded: number;
+    totalExpected: number;
+    startTime: number;
+    prevTime: number;
+    prevBytes: number;
+    smoothedRate: number;
+    pkgs: RepoPkg[];
+    error?: string;
+    done: boolean;
+    upToDate: boolean;
+  };
+
+  const states: RepoState[] = cfg.repos.map(r => ({
+    repo: r,
+    fname: `${r.name}.db`,
+    totalDownloaded: 0, totalExpected: 0,
+    startTime: Date.now(), prevTime: Date.now(), prevBytes: 0, smoothedRate: 0,
+    pkgs: [], error: undefined, done: false, upToDate: false,
+  }));
+
+  // Initialize lines for each repo
+  if (isTTY) {
+    for (const s of states) {
+      process.stdout.write(` ${color.repo(s.fname)}\n`);
+    }
+    cursorTo(process.stdout, 0, 0);
+  }
+
+  function repoLine(repoIdx: number, text: string) {
+    if (!isTTY) { process.stdout.write(text + '\n'); return; }
+    cursorTo(process.stdout, 0, repoIdx);
+    process.stdout.write(text);
+    clearLine(process.stdout, 1);
+    cursorTo(process.stdout, 0, states.length);
+  }
+
+  function updateProgress(s: RepoState, repoIdx: number, force = false) {
+    const now = Date.now();
+    if (!force && now - s.prevTime < 200) return;
+
+    const chunkTime = Math.max((now - s.prevTime) / 1000, 0.001);
+    const instantRate = (s.totalDownloaded - s.prevBytes) / chunkTime;
+    s.smoothedRate = s.smoothedRate > 0 ? (instantRate + 2 * s.smoothedRate) / 3 : instantRate;
+    s.prevTime = now;
+    s.prevBytes = s.totalDownloaded;
+
+    const dl = humanSize(s.totalDownloaded, 1);
+    const rateStr = formatRate(s.smoothedRate);
+    const eta = s.smoothedRate > 0 && s.totalExpected > 0 ? (s.totalExpected - s.totalDownloaded) / s.smoothedRate : 0;
+    const etaStr = formatETA(eta);
+    const pct = s.totalExpected > 0 ? Math.round(s.totalDownloaded / s.totalExpected * 100) : 0;
+    const bar = drawProgressBar(pct, cols);
+    const pad = Math.max(20 - s.fname.length, 1);
+
+    repoLine(repoIdx,
+      ` ${color.repo(s.fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`
+    );
+  }
+
+  function finalLine(s: RepoState, repoIdx: number) {
+    if (s.upToDate) {
+      repoLine(repoIdx, ` ${color.repo(s.fname)}${' '.repeat(Math.max(20 - s.fname.length, 1))}${color.ok('is up to date')}`);
+      return;
+    }
+    if (s.error) {
+      repoLine(repoIdx, ` ${color.repo(s.fname)}${' '.repeat(Math.max(20 - s.fname.length, 1))}${color.error('failed')}`);
+      return;
+    }
+
+    const elapsed = (Date.now() - s.startTime) / 1000;
+    const totalSec = Math.round(elapsed);
+    const finalRate = elapsed > 0 ? s.totalDownloaded / elapsed : 0;
+    const dl = humanSize(s.totalDownloaded, 1);
+    const rateStr = formatRate(finalRate);
+    const bar = drawProgressBar(100, cols);
+    const pad = Math.max(20 - s.fname.length, 1);
+
+    repoLine(repoIdx,
+      ` ${color.repo(s.fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}`
+    );
+
+    if (s.pkgs.length === 0) {
+      console.error(`  ${color.warn('WARNING:')} ${s.repo.name} returned 0 packages (wrong architecture? check pacman.conf)`);
+    }
+  }
+
+  // Run all repos in parallel
+  const tasks = cfg.repos.map(async (repo, idx) => {
+    const s = states[idx];
     let ifModifiedSince: string | undefined;
 
-    if (!force && fs.existsSync(cacheFile)) {
-      try {
-        const st = fs.statSync(cacheFile);
-        ifModifiedSince = st.mtime.toUTCString();
-      } catch {}
+    if (!force) {
+      const pkgDir = path.join(PKG_CACHE, repo.name);
+      if (fs.existsSync(pkgDir)) {
+        try {
+          const st = fs.statSync(pkgDir);
+          ifModifiedSince = st.mtime.toUTCString();
+        } catch {}
+      }
     }
-    let totalDownloaded = 0;
-    let totalExpected = 0;
-    const startTime = Date.now();
-    let prevTime = startTime;
-    let prevBytes = 0;
-    let smoothedRate = 0;
-
-    const fname = `${repo.name}.db`;
-    const nameLen = Math.min(fname.length, 30);
-
-    const updateProgress = (force = false) => {
-      const now = Date.now();
-      if (!force && now - prevTime < 200) return;
-
-      const chunkTime = Math.max((now - prevTime) / 1000, 0.001);
-      const instantRate = (totalDownloaded - prevBytes) / chunkTime;
-      smoothedRate = smoothedRate > 0 ? (instantRate + 2 * smoothedRate) / 3 : instantRate;
-
-      prevTime = now;
-      prevBytes = totalDownloaded;
-
-      const dl = humanSize(totalDownloaded, 1);
-      const rateStr = (() => {
-        if (smoothedRate < 9.995) { const s = humanSize(smoothedRate, 2); return `${s.val.padStart(4)} ${s.unit}/s`; }
-        if (smoothedRate < 99.95) { const s = humanSize(smoothedRate, 1); return `${s.val.padStart(4)} ${s.unit}/s`; }
-        const s = humanSize(smoothedRate, 0); return `${s.val.padStart(4)} ${s.unit}/s`;
-      })();
-
-      const remaining = totalExpected > 0 ? totalExpected - totalDownloaded : 0;
-      const eta = smoothedRate > 0 && totalExpected > 0 ? remaining / smoothedRate : 0;
-      const etaStr = eta > 0 && eta < 7200
-        ? `${String(Math.floor(eta / 60)).padStart(2, '0')}:${String(Math.floor(eta % 60)).padStart(2, '0')}`
-        : '--:--';
-
-      const pct = totalExpected > 0 ? Math.round(totalDownloaded / totalExpected * 100) : 0;
-      const barLen = Math.max(Math.floor((cols - 55) * 0.35), 8);
-      const hashes = Math.round(pct / 100 * barLen);
-      const bar = '#'.repeat(hashes) + '-'.repeat(Math.max(barLen - hashes, 0));
-
-      const pad = Math.max(20 - fname.length, 1);
-      process.stdout.write(
-        `\r ${fname}${' '.repeat(pad)}${dl.val.padStart(6)} ${dl.unit}  ${rateStr} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`
-      );
-    };
-
-    process.stdout.write(` ${fname}${' '.repeat(Math.max(25 - fname.length, 1))}`);
-
-    let pkgs: RepoPkg[] = [];
 
     try {
       if (repo.type === 'arch') {
-        pkgs = await syncArch(repo, cfg.architecture, ifModifiedSince, (rec, tot) => {
-          totalDownloaded = rec; totalExpected = tot;
-          updateProgress(false);
+        s.pkgs = await syncArch(repo, cfg.architecture, ifModifiedSince, (rec, tot) => {
+          s.totalDownloaded = rec; s.totalExpected = tot;
+          updateProgress(s, idx, false);
         });
       } else {
         const result = await syncDebian(repo, cfg.architecture, ifModifiedSince, (rec, tot) => {
-          totalDownloaded = rec; totalExpected = tot;
-          updateProgress(false);
+          s.totalDownloaded = rec; s.totalExpected = tot;
+          updateProgress(s, idx, false);
         });
-        pkgs = result.pkgs;
+        s.pkgs = result.pkgs;
       }
 
-      // If 304 (empty result due to conditional request), show up to date
-      if (ifModifiedSince && pkgs.length === 0 && totalDownloaded === 0) {
-        process.stdout.write(`\r ${repo.name}.db is up to date\n`);
-        continue;
+      if (ifModifiedSince && s.pkgs.length === 0 && s.totalDownloaded === 0) {
+        s.upToDate = true;
+        if (!isTTY) process.stdout.write(` ${repo.name}.db is up to date\n`);
+        return;
       }
 
-      // Write JSON Lines chunks for fast grep-based lookup
+      // Write JSON Lines chunks
       const pkgDir = path.join(PKG_CACHE, repo.name);
       if (!fs.existsSync(pkgDir)) fs.mkdirSync(pkgDir, { recursive: true });
       const CHUNK = 5000;
-      const chunks = Math.ceil(pkgs.length / CHUNK);
+      const chunks = Math.ceil(s.pkgs.length / CHUNK);
       for (let c = 0; c < chunks; c++) {
-        const chunk = pkgs.slice(c * CHUNK, (c + 1) * CHUNK);
+        const chunk = s.pkgs.slice(c * CHUNK, (c + 1) * CHUNK);
         const lines = chunk.map(p => JSON.stringify(p)).join('\n');
         fs.writeFileSync(path.join(pkgDir, `${String(c).padStart(5, '0')}.jsonl`), lines + '\n');
       }
-      fs.writeFileSync(path.join(pkgDir, '.info'), JSON.stringify({ total: pkgs.length, chunks, chunkSize: CHUNK }));
-      updateProgress(true);
-
-      // Final line (like pacman: stays on screen)
-      const elapsed = (Date.now() - startTime) / 1000;
-      const totalSec = Math.round(elapsed);
-      const finalRate = elapsed > 0 ? totalDownloaded / elapsed : 0;
-      const dl = humanSize(totalDownloaded, 1);
-      const rateStr = (() => {
-        if (finalRate < 9.995) { const s = humanSize(finalRate, 2); return `${s.val.padStart(4)} ${s.unit}/s`; }
-        if (finalRate < 99.95) { const s = humanSize(finalRate, 1); return `${s.val.padStart(4)} ${s.unit}/s`; }
-        const s = humanSize(finalRate, 0); return `${s.val.padStart(4)} ${s.unit}/s`;
-      })();
-      const etaM = Math.floor(totalSec / 60); const etaS = totalSec % 60;
-      const barLen = Math.max(Math.floor((cols - 55) * 0.35), 8);
-      const bar = '#'.repeat(barLen);
-      const pad = Math.max(20 - fname.length, 1);
-
-      process.stdout.write(
-        `\r ${fname}${' '.repeat(pad)}${dl.val.padStart(6)} ${dl.unit}  ${rateStr} ${String(etaM).padStart(2, '0')}:${String(etaS).padStart(2, '0')} [${bar}] 100%\n`
-      );
-
-      if (pkgs.length === 0) {
-        console.error(`  WARNING: ${repo.name} returned 0 packages (wrong architecture? check pacman.conf)`);
-      }
+      fs.writeFileSync(path.join(pkgDir, '.info'), JSON.stringify({ total: s.pkgs.length, chunks, chunkSize: CHUNK }));
+      updateProgress(s, idx, true);
+      s.done = true;
     } catch (e: any) {
-      process.stdout.write(`\r ${fname}${' '.repeat(Math.max(20 - fname.length, 1))}failed to download\n`);
-      console.error(`  WARNING: failed to sync ${repo.name}: ${e.message}`);
+      s.error = e.message;
     }
+
+    if (!isTTY) {
+      if (s.error) process.stdout.write(` ${repo.name}.db failed: ${s.error}\n`);
+      else if (!s.upToDate) process.stdout.write(` ${repo.name}.db done (${s.pkgs.length} packages)\n`);
+    }
+  });
+
+  await Promise.all(tasks);
+
+  // Print final lines in order
+  for (let i = 0; i < states.length; i++) {
+    finalLine(states[i], i);
   }
 
   invalidateCache();
