@@ -196,7 +196,15 @@ class RepoProgress {
       for (const r of this.rows) process.stdout.write(r + '\n');
       return;
     }
-    this.flush();
+    // Flush ALL remaining dirty rows synchronously
+    const cols = process.stdout.columns || 80;
+    while (this.dirty.length) {
+      const idx = this.dirty.shift()!;
+      const n = this.count - idx;
+      if (n > 0) process.stdout.write(`\x1b[${n}A`);
+      process.stdout.write(`\r\x1b[2K${this.rows[idx]}`);
+      if (n > 0) process.stdout.write(`\x1b[${n}B`);
+    }
     process.stdout.write('\n');
   }
 
@@ -204,8 +212,9 @@ class RepoProgress {
     if (this.dirty.length === 0) return;
     const idx = this.dirty.shift()!;
     const n = this.count - idx;
+    const cols = process.stdout.columns || 80;
     if (n > 0) process.stdout.write(`\x1b[${n}A`);
-    process.stdout.write(`\r${this.rows[idx]}\x1b[K`);
+    process.stdout.write(`\r\x1b[2K${this.rows[idx]}`);
     if (n > 0) process.stdout.write(`\x1b[${n}B`);
     setImmediate(() => this.flush());
   }
@@ -303,17 +312,19 @@ export async function syncRepos(force: boolean = false): Promise<void> {
         return;
       }
 
-      // Write JSON Lines chunks
+      // Write JSON Lines chunks (parallel per chunk)
       const pkgDir = path.join(PKG_CACHE, repo.name);
       if (!fs.existsSync(pkgDir)) fs.mkdirSync(pkgDir, { recursive: true });
       const CHUNK = 5000;
       const chunks = Math.ceil(pkgs.length / CHUNK);
+      const writeTasks = [];
       for (let c = 0; c < chunks; c++) {
         const chunk = pkgs.slice(c * CHUNK, (c + 1) * CHUNK);
         const lines = chunk.map(p => JSON.stringify(p)).join('\n');
-        fs.writeFileSync(path.join(pkgDir, `${String(c).padStart(5, '0')}.jsonl`), lines + '\n');
+        writeTasks.push(fs.promises.writeFile(path.join(pkgDir, `${String(c).padStart(5, '0')}.jsonl`), lines + '\n'));
       }
-      fs.writeFileSync(path.join(pkgDir, '.info'), JSON.stringify({ total: pkgs.length, chunks, chunkSize: CHUNK }));
+      await Promise.all(writeTasks);
+      await fs.promises.writeFile(path.join(pkgDir, '.info'), JSON.stringify({ total: pkgs.length, chunks, chunkSize: CHUNK }));
 
       // Final line
       const elapsed = (Date.now() - startTime) / 1000;
