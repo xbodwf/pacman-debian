@@ -3,12 +3,13 @@ import { initDb, loadDatabase, saveDatabase, removePkg, getPackage, runScript } 
 import { removeDpkgEntry } from '../db/dpkg-compat';
 import { confirm } from '../ui/prompt';
 import type { RemoveOptions } from '../core/options';
+import { t } from '../i18n';
 
 function removeSingle(name: string, opts: RemoveOptions = {}): boolean {
   initDb();
   const db = loadDatabase();
   const pkg = getPackage(db, name);
-  if (!pkg) { console.error(`error: '${name}' is not installed`); return false; }
+  if (!pkg) { console.error(t('error_not_installed', name)); return false; }
 
   if (opts.recursive && !opts.nodeps) {
     const deps = (pkg.depends || '').split(',').map(s => s.trim().split(/\s/)[0]).filter(Boolean);
@@ -57,12 +58,12 @@ export async function removeByName(name: string, opts: RemoveOptions = {}): Prom
   initDb();
   const db = loadDatabase();
   const pkg = getPackage(db, name);
-  if (!pkg) { console.error(`error: '${name}' is not installed`); return false; }
+  if (!pkg) { console.error(t('error_not_installed', name)); return false; }
 
-  if (opts.print) { console.log(`  would remove: ${name}`); return true; }
+  if (opts.print) { console.log(t('would_remove', name)); return true; }
 
-  console.log('checking dependencies...\n');
-  console.log(`Packages (1): ${name}-${pkg.version}`);
+  console.log(t('checking_deps_remove') + '\n');
+  console.log(t('packages_single', `${name}-${pkg.version}`));
   console.log('');
 
   if (!await confirm(':: Proceed with removal?', false)) return false;
@@ -70,7 +71,7 @@ export async function removeByName(name: string, opts: RemoveOptions = {}): Prom
   const cols = process.stdout.columns || 80;
   const bar = '#'.repeat(Math.max(Math.floor((cols - 45) * 0.35), 8));
   removeSingle(name, opts);
-  process.stdout.write(`(1/1) removing ${name.padEnd(25)}${bar} 100%\n`);
-  console.log(`:: ${name} removed`);
+  process.stdout.write(t('progress_removing', '1', '1', name, bar) + '\n');
+  console.log(t('pkg_removed', name));
   return true;
 }

@@ -4,6 +4,7 @@ import * as localdb from '../db/localdb';
 import { loadDatabase } from '../db/database';
 import { readDpkgStatus } from '../db/dpkg-compat';
 import { searchRepo } from '../repo/repository';
+import { t } from '../i18n';
 
 export function listInstalled(filter?: string): void {
   const dpkg = readDpkgStatus();
@@ -12,7 +13,7 @@ export function listInstalled(filter?: string): void {
     const lq = filter.toLowerCase();
     pkgs = pkgs.filter(p => p.package.toLowerCase().includes(lq) || (p.description && p.description.toLowerCase().includes(lq)));
   }
-  if (pkgs.length === 0) { console.log('no packages installed'); return; }
+  if (pkgs.length === 0) { console.log(t('no_pkgs_installed')); return; }
   pkgs.sort((a, b) => a.package.localeCompare(b.package));
   for (const p of pkgs) console.log(`${p.package} ${p.version}`);
 }
@@ -43,16 +44,16 @@ export function listOrphans(): void {
 export function checkIntegrity(name?: string): void {
   if (name) {
     const p = localdb.getPackage(name);
-    if (!p) { console.error(`error: '${name}' is not installed`); return; }
+    if (!p) { console.error(t('error_not_installed', name)); return; }
     let missing = 0;
     for (const f of p.files) { if (!fs.existsSync(f)) missing++; }
-    console.log(missing === 0 ? `${name}: ${p.files.length} files, 0 missing` : `${name}: WARNING: ${missing} files missing`);
+    console.log(missing === 0 ? t('integrity_ok', name, String(p.files.length)) : t('integrity_warning', name, String(missing)));
     return;
   }
   for (const p of localdb.getAllPackages()) {
     let missing = 0;
     for (const f of p.files) { if (!fs.existsSync(f)) missing++; }
-    if (missing > 0) console.log(`${p.name}: WARNING: ${missing} files missing`);
+    if (missing > 0) console.log(t('integrity_warning_global', p.name, String(missing)));
   }
 }
 
@@ -60,47 +61,47 @@ export function showInfo(name: string, fromRepo: boolean): void {
   if (fromRepo) {
     const r = searchRepo(name);
     const p = r.find(x => x.package === name);
-    if (!p) { console.error(`error: '${name}' not found`); return; }
-    console.log(`Repository     : ${p.repo}`);
-    console.log(`Name           : ${p.package}`);
-    console.log(`Version        : ${p.version}`);
-    console.log(`Description    : ${p.description || ''}`);
-    if (p.depends) console.log(`Depends On     : ${p.depends}`);
-    if (p.size) console.log(`Download Size  : ${(p.size / 1024).toFixed(2)} KiB`);
+    if (!p) { console.error(t('error_not_found', name)); return; }
+    console.log(t('info_repo', p.repo));
+    console.log(t('info_name', p.package));
+    console.log(t('info_version', p.version));
+    console.log(t('info_description', p.description || ''));
+    if (p.depends) console.log(t('info_depends', p.depends));
+    if (p.size) console.log(t('info_download_size', (p.size / 1024).toFixed(2) + ' KiB'));
     return;
   }
 
   const dpkg = readDpkgStatus();
   const p = dpkg.get(name);
-  if (!p) { console.error(`error: '${name}' was not found`); return; }
+  if (!p) { console.error(t('error_was_not_found', name)); return; }
 
   const our = localdb.getPackage(name);
   const m = !!our;
 
-  console.log(`Name           : ${p.package}`);
-  console.log(`Version        : ${p.version}`);
-  console.log(`Description    : ${p.description || ''}`);
-  console.log(`Architecture   : ${p.architecture}`);
-  console.log(`URL            : ${p.homepage || ''}`);
-  if (m && our) console.log(`Install Reason : ${our.reason === 'explicit' ? 'Explicitly installed' : 'Installed as a dependency'} (pacman-debian)`);
-  if (!m) console.log(`Install Reason : Installed via dpkg`);
-  if (p.depends) console.log(`Depends On     : ${p.depends}`);
-  if (p.installedSize) console.log(`Installed Size : ${(p.installedSize / 1024).toFixed(2)} KiB`);
-  if (p.maintainer) console.log(`Packager       : ${p.maintainer}`);
+  console.log(t('info_name', p.package));
+  console.log(t('info_version', p.version));
+  console.log(t('info_description', p.description || ''));
+  console.log(t('info_architecture', p.architecture));
+  console.log(t('info_url', p.homepage || ''));
+  if (m && our) console.log(t(our.reason === 'explicit' ? 'info_install_reason_explicit' : 'info_install_reason_dep'));
+  if (!m) console.log(t('info_install_reason_dpkg'));
+  if (p.depends) console.log(t('info_depends', p.depends));
+  if (p.installedSize) console.log(t('info_installed_size', (p.installedSize / 1024).toFixed(2) + ' KiB'));
+  if (p.maintainer) console.log(t('info_packager', p.maintainer));
   if (our) {
-    console.log(`Files          : ${our.files.length}`);
-    console.log(`Install Date   : ${new Date(our.installTime).toISOString().slice(0, 10)}`);
+    console.log(t('info_files', String(our.files.length)));
+    console.log(t('info_install_date', new Date(our.installTime).toISOString().slice(0, 10)));
   }
 }
 
 export function queryFile(fp: string): void {
   const owner = localdb.getFileOwner(fp);
-  if (owner) { console.log(`${fp} is owned by ${owner}`); return; }
+  if (owner) { console.log(t('file_owned_by', fp, owner)); return; }
   try {
     const out = execSync(`dpkg -S ${fp} 2>/dev/null`, { encoding: 'utf8' });
     console.log(out.trim());
   } catch {
-    console.error(`error: no package owns ${fp}`);
+    console.error(t('error_no_pkg_owns_file', fp));
   }
 }
 
@@ -112,5 +113,5 @@ export function listFiles(name: string): void {
     for (const f of fs.readFileSync(lp, 'utf8').split('\n').filter(Boolean)) console.log(`${name} ${f}`);
     return;
   }
-  console.error(`error: '${name}' was not found`);
+  console.error(t('error_was_not_found', name));
 }

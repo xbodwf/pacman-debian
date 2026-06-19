@@ -14,6 +14,7 @@ import { resolveDeps, detectConflicts } from '../core/deps';
 import { formatBytes } from '../ui/format';
 import { humanSize, drawProgressBar, formatRate, formatETA } from '../ui/progress';
 import { confirm } from '../ui/prompt';
+import { t } from '../i18n';
 import type { InstalledPackage, RepoPkg } from '../core/types';
 import type { InstallOptions } from '../core/options';
 
