@@ -203,11 +203,10 @@ class RepoProgress {
   private flush() {
     if (this.dirty.length === 0) return;
     const idx = this.dirty.shift()!;
-    // Move up from bottom to the target row
-    const up = this.count - 1 - idx;
-    if (up > 0) process.stdout.write(`\x1b[${up}A`);
+    const n = this.count - idx;
+    if (n > 0) process.stdout.write(`\x1b[${n}A`);
     process.stdout.write(`\r${this.rows[idx]}\x1b[K`);
-    if (up > 0) process.stdout.write(`\x1b[${up}B`);
+    if (n > 0) process.stdout.write(`\x1b[${n}B`);
     setImmediate(() => this.flush());
   }
 }
