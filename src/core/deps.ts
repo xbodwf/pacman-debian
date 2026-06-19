@@ -215,9 +215,15 @@ export function invalidateDepCache(): void { _state = null; }
 function parseDepList(s?: string): Dep[] {
   if (!s) return [];
   const result: Dep[] = [];
-  // Arch format: space-separated (glibc>=2.35  yyjson)
   // Debian format: comma-separated (libc6 (>= 2.34), libyyjson)
-  const parts = s.includes(',') ? s.split(',') : s.split(/\s+/);
+  // Arch format: space-separated (glibc>=2.35  yyjson)
+  const parts = s.includes(',') ? s.split(',') : (() => {
+    // No comma: could be single Debian dep with parens like "libc6 (>= 2.34)"
+    // or space-separated Arch deps like "glibc>=2.35  yyjson"
+    // If the string has parens, treat as single dep (Debian style)
+    if (s.includes('(') || s.includes(')')) return [s];
+    return s.split(/\s+/);
+  })();
   for (const part of parts) {
     const trimmed = part.trim();
     if (!trimmed) continue;
