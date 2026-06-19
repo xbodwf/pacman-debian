@@ -174,10 +174,10 @@ class RepoProgress {
   init(names: string[]) {
     this.count = names.length;
     // Initialize rows with just the repo name (shown before download starts)
-    this.rows = names.map(n => ` ${color.repo(`${n}.db`)}`);
+    this.rows = names.map(n => ` ${color.repo(n)}`);
     if (!process.stdout.isTTY) return;
     // Reserve lines for each repo (writes repo name immediately)
-    for (let i = 0; i < names.length; i++) process.stdout.write(` ${color.repo(`${names[i]}.db`)}\n`);
+    for (let i = 0; i < names.length; i++) process.stdout.write(` ${color.repo(names[i])}\n`);
     // Mark all as dirty so first flush updates them
     this.dirty = names.map((_, i) => i);
     this.timer = setInterval(() => this.flush(), 200);
@@ -238,10 +238,11 @@ export async function syncRepos(force: boolean = false): Promise<void> {
   if (!fs.existsSync(PKG_CACHE)) fs.mkdirSync(PKG_CACHE, { recursive: true });
   const cols = process.stdout.columns || 80;
   const progress = new RepoProgress();
+  const namePad = Math.max(...cfg.repos.map(r => r.name.length)) + 2;
   progress.init(cfg.repos.map(r => r.name));
 
   const tasks = cfg.repos.map(async (repo, idx) => {
-    const fname = `${repo.name}.db`;
+    const pname = color.repo(repo.name);
     let ifModifiedSince: string | undefined;
 
     if (!force) {
@@ -268,8 +269,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const etaStr = formatETA(eta);
       const pct = totalExpected > 0 ? Math.round(totalDownloaded / totalExpected * 100) : 0;
       const bar = drawProgressBar(pct, cols);
-      const pad = Math.max(20 - fname.length, 1);
-      return ` ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`;
+      return ` ${pname}${' '.repeat(namePad - repo.name.length)}${color.size(dl.val.padStart(7))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`;
     };
 
     const updateProgress = () => {
@@ -300,7 +300,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       }
 
       if (ifModifiedSince && pkgs.length === 0 && totalDownloaded === 0) {
-        progress.setRow(idx, ` ${color.repo(fname)} ${color.ok(t('repo_already_uptodate', fname))}`);
+        progress.setRow(idx, ` ${pname}${' '.repeat(namePad - repo.name.length)}${color.ok(t('repo_already_uptodate', repo.name))}`);
         return;
       }
 
@@ -323,12 +323,11 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const dl = humanSize(totalDownloaded, 1);
       const rateStr = formatRate(finalRate);
       const bar = drawProgressBar(100, cols);
-      const pad = Math.max(20 - fname.length, 1);
       progress.setRow(idx,
-        ` ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}`
+        ` ${pname}${' '.repeat(namePad - repo.name.length)}${color.size(dl.val.padStart(7))} ${dl.unit}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}`
       );
     } catch (e: any) {
-      progress.setRow(idx, ` ${color.repo(fname)} ${color.error(t('repo_sync_failed'))}: ${e.message}`);
+      progress.setRow(idx, ` ${pname}${' '.repeat(namePad - repo.name.length)}${color.error(t('repo_sync_failed'))}: ${e.message}`);
     }
   });
 
