@@ -1,7 +1,7 @@
 {
   "name": "pacman-debian",
-  "version": "7.1.0",
-  "description": "pacman-syntax package manager for Debian/Ubuntu with Arch repo support",
+  "version": "7.2.0",
+  "description": "A Debian/Ubuntu package manager using Arch Linux pacman syntax. Manages .deb packages at dpkg level, supports Arch .pkg.tar.zst, AUR helpers (yay), and makepkg. Configurable multi-repo setup.",
   "pacmanVersion": "7.1.0",
   "main": "dist/index.js",
   "bin": {
@@ -13,14 +13,27 @@
   "scripts": {
     "build": "tsc && make -s -C lib/pac4deb",
     "build:lib": "make -C lib/pac4deb",
-    "setup": "node dist/scripts/setup.js",
+    "setup": "sudo node dist/scripts/setup.js",
     "start": "node dist/index.js",
-    "postinstall": "node -e \"require('fs').existsSync('dist') && require('child_process').execSync('node dist/scripts/setup.js', { stdio: 'inherit' })\""
+    "postinstall": "echo 'Run `sudo pacman-debian-setup` to complete installation.'",
+    "prepublishOnly": "pnpm build"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": ["pacman", "debian", "ubuntu", "package-manager", "arch", "aur", "makepkg"],
+  "author": "Xbodwf",
+  "license": "GPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xbodwf/pacman-debian.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Xbodwf/pacman-debian/issues"
+  },
+  "homepage": "https://github.com/Xbodwf/pacman-debian",
   "packageManager": "pnpm@10.30.3",
+  "engines": {
+    "node": ">=18"
+  },
+  "os": ["linux"],
   "devDependencies": {
     "@types/node": "^25.9.3",
     "typescript": "^6.0.3"
