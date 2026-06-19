@@ -3,7 +3,6 @@ import * as path from 'node:path';
 import * as https from 'node:https';
 import * as http from 'node:http';
 import * as zlib from 'node:zlib';
-import { cursorTo, clearLine } from 'node:readline';
 import { loadConfig } from './config';
 import { parseControlFile } from '../core/control';
 import { decompress } from '../core/compress';
@@ -167,29 +166,8 @@ export async function syncRepos(force: boolean = false): Promise<void> {
   const cfg = loadConfig();
   if (!fs.existsSync(PKG_CACHE)) fs.mkdirSync(PKG_CACHE, { recursive: true });
   const cols = process.stdout.columns || 80;
-  const repoCount = cfg.repos.length;
-  const isTTY = process.stdout.isTTY;
 
-  // Pre-print blank lines, one per repo. We'll update them in-place
-  // using ANSI cursor control so each repo gets its own progress line.
-  if (isTTY) {
-    for (let i = 0; i < repoCount; i++) process.stdout.write('\n');
-    cursorTo(process.stdout, 0, 0);
-  }
-
-  function writeLine(row: number, text: string, newline = false) {
-    if (!isTTY) { process.stdout.write(text + (newline ? '\n' : '') + '\n'); return; }
-    cursorTo(process.stdout, 0, row);
-    process.stdout.write(text);
-    clearLine(process.stdout, 1);
-    if (newline) {
-      // Move to after the last line so subsequent \n output lands correctly
-      cursorTo(process.stdout, 0, repoCount);
-      process.stdout.write('\n');
-    }
-  }
-
-  const tasks = cfg.repos.map(async (repo, idx) => {
+  const tasks = cfg.repos.map(async (repo) => {
     const fname = `${repo.name}.db`;
     let ifModifiedSince: string | undefined;
 
@@ -228,8 +206,8 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const bar = drawProgressBar(pct, cols);
       const pad = Math.max(20 - fname.length, 1);
 
-      writeLine(idx,
-        ` ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`
+      process.stdout.write(
+        `\r ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`
       );
     };
 
@@ -249,7 +227,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       }
 
       if (ifModifiedSince && pkgs.length === 0 && totalDownloaded === 0) {
-        writeLine(idx, ` ${color.repo(fname)} ${color.ok(t('repo_already_uptodate', fname))}`, true);
+        process.stdout.write(`\r ${color.repo(fname)} ${color.ok(t('repo_already_uptodate', fname))}\n`);
         return;
       }
 
@@ -274,12 +252,11 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const bar = drawProgressBar(100, cols);
       const pad = Math.max(20 - fname.length, 1);
 
-      writeLine(idx,
-        ` ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}`,
-        true
+      process.stdout.write(
+        `\r ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}\n`
       );
     } catch (e: any) {
-      writeLine(idx, ` ${color.repo(fname)} ${color.error(t('repo_sync_failed'))}: ${e.message}`, true);
+      process.stdout.write(`\r ${color.repo(fname)} ${color.error(t('repo_sync_failed'))}: ${e.message}\n`);
     }
   });
 
