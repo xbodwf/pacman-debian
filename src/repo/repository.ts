@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import * as https from 'node:https';
 import * as http from 'node:http';
 import * as zlib from 'node:zlib';
-import { cursorTo, clearLine } from 'node:readline';
+
 import { loadConfig } from './config';
 import { parseControlFile } from '../core/control';
 import { decompress } from '../core/compress';
@@ -162,54 +162,23 @@ async function syncArch(repo: RepoConfig, globalArch: string, ifModifiedSince?: 
   return parseArchDb(tar, repo.name);
 }
 
-// ---- Shared multi-line display (parallel-safe) ----
-// All repos write to a shared buffer; a single timer redraws everything
-// so cursor movement never races.
-class ProgressDisplay {
-  private lines: string[] = [];
-  private dirty = false;
-  private timer: ReturnType<typeof setInterval> | null = null;
-  private started = false;
+// ---- Write mutex: serializes all stdout writes to prevent interleaving ----
+const writeQueue: string[] = [];
+let writing = false;
 
-  init(count: number) {
-    this.lines = new Array(count).fill('');
-    if (!process.stdout.isTTY) return;
-    // Reserve N blank lines
-    // Leave row 0 for the header, reserve rows 1..count
-    for (let i = 0; i < count; i++) process.stdout.write('\n');
-    cursorTo(process.stdout, 0, 1);
-    this.dirty = true;
-    this.started = true;
-    this.timer = setInterval(() => this.flush(), 200);
-  }
+function safeWrite(s: string) {
+  writeQueue.push(s);
+  if (!writing) flushWrite();
+}
 
-  setLine(idx: number, text: string) {
-    if (idx < 0 || idx >= this.lines.length) return;
-    if (this.lines[idx] === text) return; // no change
-    this.lines[idx] = text;
-    this.dirty = true;
-  }
-
-  finish() {
-    if (this.timer) { clearInterval(this.timer); this.timer = null; }
-    if (!process.stdout.isTTY) {
-      // Print all buffered lines
-      for (const l of this.lines) process.stdout.write(l + '\n');
-      return;
-    }
-    this.flush();
-    cursorTo(process.stdout, 0, this.lines.length + 1);
-    process.stdout.write('\n');
-  }
-
-  private flush() {
-    if (!this.dirty) return;
-    this.dirty = false;
-    for (let i = 0; i < this.lines.length; i++) {
-      cursorTo(process.stdout, 0, i + 1);
-      clearLine(process.stdout, 1);
-      process.stdout.write(this.lines[i]);
-    }
+function flushWrite() {
+  if (writeQueue.length === 0) { writing = false; return; }
+  writing = true;
+  const s = writeQueue.shift()!;
+  if (process.stdout.write(s)) {
+    setImmediate(flushWrite);
+  } else {
+    process.stdout.once('drain', flushWrite);
   }
 }
 
@@ -218,10 +187,8 @@ export async function syncRepos(force: boolean = false): Promise<void> {
   const cfg = loadConfig();
   if (!fs.existsSync(PKG_CACHE)) fs.mkdirSync(PKG_CACHE, { recursive: true });
   const cols = process.stdout.columns || 80;
-  const display = new ProgressDisplay();
-  display.init(cfg.repos.length);
 
-  const tasks = cfg.repos.map(async (repo, idx) => {
+  const tasks = cfg.repos.map(async (repo) => {
     const fname = `${repo.name}.db`;
     let ifModifiedSince: string | undefined;
 
@@ -242,8 +209,16 @@ export async function syncRepos(force: boolean = false): Promise<void> {
     let prevBytes = 0;
     let smoothedRate = 0;
 
-    // Build a progress line text (no stdout write)
-    const progressText = () => {
+    const updateProgress = () => {
+      const now = Date.now();
+      if (now - prevTime < 200) return;
+
+      const chunkTime = Math.max((now - prevTime) / 1000, 0.001);
+      const instantRate = (totalDownloaded - prevBytes) / chunkTime;
+      smoothedRate = smoothedRate > 0 ? (instantRate + 2 * smoothedRate) / 3 : instantRate;
+      prevTime = now;
+      prevBytes = totalDownloaded;
+
       const dl = humanSize(totalDownloaded, 1);
       const rateStr = formatRate(smoothedRate);
       const eta = smoothedRate > 0 && totalExpected > 0 ? (totalExpected - totalDownloaded) / smoothedRate : 0;
@@ -251,19 +226,10 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const pct = totalExpected > 0 ? Math.round(totalDownloaded / totalExpected * 100) : 0;
       const bar = drawProgressBar(pct, cols);
       const pad = Math.max(20 - fname.length, 1);
-      return ` ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`;
-    };
 
-    const updateProgress = () => {
-      const now = Date.now();
-      if (now - prevTime < 200) return;
-      const chunkTime = Math.max((now - prevTime) / 1000, 0.001);
-      smoothedRate = smoothedRate > 0
-        ? ((totalDownloaded - prevBytes) / chunkTime + 2 * smoothedRate) / 3
-        : (totalDownloaded - prevBytes) / chunkTime;
-      prevTime = now;
-      prevBytes = totalDownloaded;
-      display.setLine(idx, progressText());
+      safeWrite(
+        `\r ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`
+      );
     };
 
     try {
@@ -282,7 +248,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       }
 
       if (ifModifiedSince && pkgs.length === 0 && totalDownloaded === 0) {
-        display.setLine(idx, ` ${color.repo(fname)} ${color.ok(t('repo_already_uptodate', fname))}`);
+        safeWrite(`\r ${color.repo(fname)} ${color.ok(t('repo_already_uptodate', fname))}\n`);
         return;
       }
 
@@ -306,16 +272,16 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const rateStr = formatRate(finalRate);
       const bar = drawProgressBar(100, cols);
       const pad = Math.max(20 - fname.length, 1);
-      display.setLine(idx,
-        ` ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}`
+
+      safeWrite(
+        `\r ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}\n`
       );
     } catch (e: any) {
-      display.setLine(idx, ` ${color.repo(fname)} ${color.error(t('repo_sync_failed'))}: ${e.message}`);
+      safeWrite(`\r ${color.repo(fname)} ${color.error(t('repo_sync_failed'))}: ${e.message}\n`);
     }
   });
 
   await Promise.all(tasks);
-  display.finish();
   invalidateCache();
 }
 
