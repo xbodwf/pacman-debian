@@ -277,7 +277,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const etaStr = formatETA(eta);
       const pct = totalExpected > 0 ? Math.round(totalDownloaded / totalExpected * 100) : 0;
       const bar = drawProgressBar(pct, cols);
-      return ` ${pname}${' '.repeat(namePad - repo.name.length)}${color.size(dl.val.padStart(7))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`;
+      return ` ${pname}${' '.repeat(namePad - repo.name.length)}${color.size(dl.val.padStart(7))} ${dl.unit.padEnd(3)}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`;
     };
 
     const updateProgress = () => {
@@ -337,7 +337,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const rateStr = formatRate(finalRate);
       const bar = drawProgressBar(100, cols);
       progress.setRow(idx,
-        ` ${pname}${' '.repeat(namePad - repo.name.length)}${color.size(dl.val.padStart(7))} ${dl.unit}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}`
+        ` ${pname}${' '.repeat(namePad - repo.name.length)}${color.size(dl.val.padStart(7))} ${dl.unit.padEnd(3)}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}`
       );
     } catch (e: any) {
       progress.setRow(idx, ` ${pname}${' '.repeat(namePad - repo.name.length)}${color.error(t('repo_sync_failed'))}: ${e.message}`);
