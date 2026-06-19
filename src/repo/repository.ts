@@ -339,9 +339,10 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       }
       await Promise.all(writeTasks);
       await fs.promises.writeFile(path.join(pkgDir, '.info'), JSON.stringify({ total: pkgs.length, chunks, chunkSize: CHUNK }));
+      // Remove legacy all.json
+      try { fs.unlinkSync(path.join(pkgDir, 'all.json')); } catch {}
       await fs.promises.writeFile(path.join(pkgDir, 'packages.idx'), idxLines.join('\n') + '\n');
-      // Write all.json for fast getRepoCache (single JSON.parse vs 64k)
-      await fs.promises.writeFile(path.join(pkgDir, 'all.json'), JSON.stringify(pkgs));
+
 
       // Final line
       const elapsed = (Date.now() - startTime) / 1000;
@@ -377,24 +378,9 @@ export function getRepoCache(): RepoPkg[] {
   for (const repo of cfg.repos) {
     const pkgDir = path.join(PKG_CACHE, repo.name);
     if (!fs.existsSync(pkgDir)) continue;
-
-    // Use all.json if available (single JSON.parse vs 64k)
-    const allPath = path.join(pkgDir, 'all.json');
-    if (fs.existsSync(allPath)) {
-      try {
-        const pkgs = JSON.parse(fs.readFileSync(allPath, 'utf8')) as RepoPkg[];
-        for (const p of pkgs) {
-          if (!seen.has(p.package)) { seen.add(p.package); all.push(p); }
-        }
-        continue;
-      } catch {}
-    }
-
-    // Fallback: scan JSONL chunks
     const files = fs.readdirSync(pkgDir).filter(f => f.endsWith('.jsonl')).sort();
     for (const f of files) {
-      const lines = fs.readFileSync(path.join(pkgDir, f), 'utf8').trim().split('\n');
-      for (const line of lines) {
+      for (const line of fs.readFileSync(path.join(pkgDir, f), 'utf8').trim().split('\n')) {
         if (!line) continue;
         try {
           const p = JSON.parse(line) as RepoPkg;
