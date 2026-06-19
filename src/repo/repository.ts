@@ -167,7 +167,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
   if (!fs.existsSync(PKG_CACHE)) fs.mkdirSync(PKG_CACHE, { recursive: true });
   const cols = process.stdout.columns || 80;
 
-  const tasks = cfg.repos.map(async (repo) => {
+  for (const repo of cfg.repos) {
     const fname = `${repo.name}.db`;
     let ifModifiedSince: string | undefined;
 
@@ -207,7 +207,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const pad = Math.max(20 - fname.length, 1);
 
       process.stdout.write(
-        `\r ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`
+        ` ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%\r`
       );
     };
 
@@ -227,8 +227,8 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       }
 
       if (ifModifiedSince && pkgs.length === 0 && totalDownloaded === 0) {
-        process.stdout.write(`\r ${color.repo(fname)} ${color.ok(t('repo_already_uptodate', fname))}\n`);
-        return;
+        console.log(` ${color.repo(fname)} ${color.ok(t('repo_already_uptodate', fname))}`);
+        continue;
       }
 
       // Write JSON Lines chunks
@@ -252,15 +252,14 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const bar = drawProgressBar(100, cols);
       const pad = Math.max(20 - fname.length, 1);
 
-      process.stdout.write(
-        `\r ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}\n`
+      console.log(
+        ` ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}`
       );
     } catch (e: any) {
-      process.stdout.write(`\r ${color.repo(fname)} ${color.error(t('repo_sync_failed'))}: ${e.message}\n`);
+      console.log(` ${color.repo(fname)} ${color.error(t('repo_sync_failed'))}: ${e.message}`);
     }
-  });
+  }
 
-  await Promise.all(tasks);
   invalidateCache();
 }
 
