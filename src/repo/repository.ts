@@ -327,11 +327,19 @@ export async function syncRepos(force: boolean = false): Promise<void> {
         const lines = chunk.map(p => JSON.stringify(p)).join('\n');
         const fname = `${String(c).padStart(5, '0')}.jsonl`;
         writeTasks.push(fs.promises.writeFile(path.join(pkgDir, fname), lines + '\n'));
-        chunk.forEach((p, i) => idxLines.push(`${p.package}:${fname}:${i}`));
+        // Build index with byte offsets (computed from previous chunk lengths)
+        let offset = 0;
+        for (let pi = 0; pi < chunk.length; pi++) {
+          const json = JSON.stringify(chunk[pi]);
+          idxLines.push(`${chunk[pi].package}:${fname}:${offset}`);
+          offset += json.length + 1; // +1 for \n
+        }
       }
       await Promise.all(writeTasks);
       await fs.promises.writeFile(path.join(pkgDir, '.info'), JSON.stringify({ total: pkgs.length, chunks, chunkSize: CHUNK }));
       await fs.promises.writeFile(path.join(pkgDir, 'packages.idx'), idxLines.join('\n') + '\n');
+      // Write all.json for fast getRepoCache (single JSON.parse vs 64k)
+      await fs.promises.writeFile(path.join(pkgDir, 'all.json'), JSON.stringify(pkgs));
 
       // Final line
       const elapsed = (Date.now() - startTime) / 1000;
@@ -391,10 +399,57 @@ export function invalidateCache(): void { _cache = null; }
 
 export function searchRepo(query: string): RepoPkg[] {
   const lq = query.toLowerCase();
-  return getRepoCache().filter(p =>
-    p.package.toLowerCase().includes(lq) ||
-    (p.description && p.description.toLowerCase().includes(lq))
-  );
+  const results: RepoPkg[] = [];
+  const cfg = loadConfig();
+
+  for (const repo of cfg.repos) {
+    const pkgDir = path.join(PKG_CACHE, repo.name);
+    const idxPath = path.join(pkgDir, 'packages.idx');
+    if (!fs.existsSync(idxPath)) continue;
+
+    const idx = fs.readFileSync(idxPath, 'utf8').split('\n');
+    const nameMatchIdx: number[] = [];
+
+    // Phase 1: scan index for name matches (fast, 1.4MB total)
+    for (let i = 0; i < idx.length; i++) {
+      if (!idx[i]) continue;
+      // idx line: pkgname:chunkFile:byteOffset
+      const colon = idx[i].indexOf(':');
+      if (colon < 0) continue;
+      const pname = idx[i].slice(0, colon);
+      if (pname.toLowerCase().includes(lq)) nameMatchIdx.push(i);
+    }
+
+    if (nameMatchIdx.length === 0) continue;
+
+    // Phase 2: read only matched packages via byte-offset seek
+    for (const i of nameMatchIdx) {
+      const parts = idx[i].split(':');
+      const chunkFile = parts[1];
+      const byteOff = parseInt(parts.slice(2).join(':'), 10);
+      if (!chunkFile || isNaN(byteOff)) continue;
+
+      const fd = fs.openSync(path.join(pkgDir, chunkFile), 'r');
+      const buf = Buffer.alloc(65536);
+      const bytes = fs.readSync(fd, buf, 0, 65536, byteOff);
+      fs.closeSync(fd);
+      const end = buf.indexOf(10);
+      const json = end >= 0 ? buf.toString('utf8', 0, end) : buf.toString('utf8', 0, bytes);
+      try {
+        const p = JSON.parse(json) as RepoPkg;
+        results.push(p);
+      } catch {}
+    }
+  }
+
+  // Phase 3: deduplicate and filter by description too
+  const seen = new Set<string>();
+  return results.filter(p => {
+    if (seen.has(p.package)) return false;
+    seen.add(p.package);
+    if (p.description && p.description.toLowerCase().includes(lq)) return true;
+    return p.package.toLowerCase().includes(lq);
+  });
 }
 
 export function findInRepo(pkgName: string): RepoPkg | undefined {
@@ -403,12 +458,11 @@ export function findInRepo(pkgName: string): RepoPkg | undefined {
     const pkgDir = path.join(PKG_CACHE, repo.name);
     if (!fs.existsSync(pkgDir)) continue;
 
-    // Use packages.idx for fast lookup (built during sync)
     const idxPath = path.join(pkgDir, 'packages.idx');
     if (!fs.existsSync(idxPath)) continue;
     const idx = fs.readFileSync(idxPath, 'utf8').split('\n');
 
-    // Binary search in sorted index
+    // Binary search: index is sorted "pkgname:chunkFile:byteOffset"
     const target = `${pkgName}:`;
     let lo = 0, hi = idx.length - 1;
     while (lo <= hi) {
@@ -418,13 +472,18 @@ export function findInRepo(pkgName: string): RepoPkg | undefined {
       if (line < target) lo = mid + 1;
       else if (line > target) hi = mid - 1;
       else {
-        // Found: pkgName:chunkFile:lineNum
         const parts = line.split(':');
         const chunkFile = parts[1];
-        const lineNum = parseInt(parts[2], 10);
-        if (!chunkFile || isNaN(lineNum)) break;
-        const jsonl = fs.readFileSync(path.join(pkgDir, chunkFile), 'utf8').split('\n');
-        try { return JSON.parse(jsonl[lineNum]) as RepoPkg; } catch { return undefined; }
+        const byteOff = parseInt(parts.slice(2).join(':'), 10);
+        if (!chunkFile || isNaN(byteOff)) break;
+        // Seek directly to byte offset and read until newline
+        const fd = fs.openSync(path.join(pkgDir, chunkFile), 'r');
+        const buf = Buffer.alloc(65536);
+        const bytes = fs.readSync(fd, buf, 0, 65536, byteOff);
+        fs.closeSync(fd);
+        const end = buf.indexOf(10, 0); // first \n
+        const json = end >= 0 ? buf.toString('utf8', 0, end) : buf.toString('utf8', 0, bytes);
+        try { return JSON.parse(json) as RepoPkg; } catch { return undefined; }
       }
     }
   }
