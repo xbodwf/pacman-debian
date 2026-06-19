@@ -159,38 +159,10 @@ async function syncArch(repo: RepoConfig, globalArch: string, ifModifiedSince?: 
   return parseArchDb(tar, repo.name);
 }
 
-function humanSize(n: number, dec: number): { val: string; unit: string } {
-  const abs = Math.abs(n);
-  let v: number, u: string;
-  if (abs < 1024) { v = n; u = 'B'; }
-  else if (abs < 1048576) { v = n / 1024; u = 'KiB'; }
-  else if (abs < 1073741824) { v = n / 1048576; u = 'MiB'; }
-  else { v = n / 1073741824; u = 'GiB'; }
-  return { val: v.toFixed(dec), unit: u };
-}
-
-function formatRate(rate: number): string {
-  if (rate < 9.995) { const s = humanSize(rate, 2); return `${s.val.padStart(4)} ${s.unit}/s`; }
-  if (rate < 99.95) { const s = humanSize(rate, 1); return `${s.val.padStart(4)} ${s.unit}/s`; }
-  const s = humanSize(rate, 0); return `${s.val.padStart(4)} ${s.unit}/s`;
-}
-
-function formatETA(eta: number): string {
-  if (eta <= 0 || eta >= 7200) return '--:--';
-  return `${String(Math.floor(eta / 60)).padStart(2, '0')}:${String(Math.floor(eta % 60)).padStart(2, '0')}`;
-}
-
-function drawProgressBar(pct: number, cols: number): string {
-  const barLen = Math.max(Math.floor((cols - 55) * 0.35), 8);
-  const hashes = Math.round(pct / 100 * barLen);
-  return '#'.repeat(hashes) + '-'.repeat(Math.max(barLen - hashes, 0));
-}
-
 // ---- Main sync ----
 export async function syncRepos(force: boolean = false): Promise<void> {
   const cfg = loadConfig();
   if (!fs.existsSync(PKG_CACHE)) fs.mkdirSync(PKG_CACHE, { recursive: true });
-  const cols = process.stdout.columns || 80;
 
   const tasks = cfg.repos.map(async (repo) => {
     const fname = `${repo.name}.db`;
@@ -206,54 +178,17 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       }
     }
 
-    let totalDownloaded = 0;
-    let totalExpected = 0;
-    const startTime = Date.now();
-    let prevTime = startTime;
-    let prevBytes = 0;
-    let smoothedRate = 0;
-
-    const updateProgress = (force = false) => {
-      const now = Date.now();
-      if (!force && now - prevTime < 200) return;
-
-      const chunkTime = Math.max((now - prevTime) / 1000, 0.001);
-      const instantRate = (totalDownloaded - prevBytes) / chunkTime;
-      smoothedRate = smoothedRate > 0 ? (instantRate + 2 * smoothedRate) / 3 : instantRate;
-      prevTime = now;
-      prevBytes = totalDownloaded;
-
-      const dl = humanSize(totalDownloaded, 1);
-      const rateStr = formatRate(smoothedRate);
-      const eta = smoothedRate > 0 && totalExpected > 0 ? (totalExpected - totalDownloaded) / smoothedRate : 0;
-      const etaStr = formatETA(eta);
-      const pct = totalExpected > 0 ? Math.round(totalDownloaded / totalExpected * 100) : 0;
-      const bar = drawProgressBar(pct, cols);
-      const pad = Math.max(20 - fname.length, 1);
-
-      process.stdout.write(
-        `\r ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`
-      );
-    };
-
-    let pkgs: RepoPkg[] = [];
-
     try {
+      let pkgs: RepoPkg[];
       if (repo.type === 'arch') {
-        pkgs = await syncArch(repo, cfg.architecture, ifModifiedSince, (rec, tot) => {
-          totalDownloaded = rec; totalExpected = tot;
-          updateProgress(false);
-        });
+        pkgs = await syncArch(repo, cfg.architecture, ifModifiedSince);
       } else {
-        const result = await syncDebian(repo, cfg.architecture, ifModifiedSince, (rec, tot) => {
-          totalDownloaded = rec; totalExpected = tot;
-          updateProgress(false);
-        });
+        const result = await syncDebian(repo, cfg.architecture, ifModifiedSince);
         pkgs = result.pkgs;
       }
 
-      if (ifModifiedSince && pkgs.length === 0 && totalDownloaded === 0) {
-        process.stdout.write(`\r ${color.repo(fname)}${' '.repeat(Math.max(20 - fname.length, 1))}${color.ok('is up to date')}\n`);
+      if (ifModifiedSince && pkgs.length === 0) {
+        process.stdout.write(` ${color.repo(fname)} ${color.ok('已经是最新版本')}\n`);
         return;
       }
 
@@ -268,26 +203,14 @@ export async function syncRepos(force: boolean = false): Promise<void> {
         fs.writeFileSync(path.join(pkgDir, `${String(c).padStart(5, '0')}.jsonl`), lines + '\n');
       }
       fs.writeFileSync(path.join(pkgDir, '.info'), JSON.stringify({ total: pkgs.length, chunks, chunkSize: CHUNK }));
-      updateProgress(true);
 
-      // Final line
-      const elapsed = (Date.now() - startTime) / 1000;
-      const totalSec = Math.round(elapsed);
-      const finalRate = elapsed > 0 ? totalDownloaded / elapsed : 0;
-      const dl = humanSize(totalDownloaded, 1);
-      const rateStr = formatRate(finalRate);
-      const bar = drawProgressBar(100, cols);
-      const pad = Math.max(20 - fname.length, 1);
-
-      process.stdout.write(
-        `\r ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}\n`
-      );
+      process.stdout.write(` ${color.repo(fname)} ${color.ok(pkgs.length + ' 个软件包已同步')}\n`);
 
       if (pkgs.length === 0) {
-        console.error(`  ${color.warn('WARNING:')} ${repo.name} returned 0 packages (wrong architecture? check pacman.conf)`);
+        console.error(`  ${color.warn('WARNING:')} ${repo.name} 返回 0 个软件包（请检查 pacman.conf 中的架构设置）`);
       }
     } catch (e: any) {
-      process.stdout.write(`\r ${color.repo(fname)}${' '.repeat(Math.max(20 - fname.length, 1))}${color.error('failed')}: ${e.message}\n`);
+      process.stdout.write(` ${color.repo(fname)} ${color.error('同步失败')}: ${e.message}\n`);
     }
   });
 
