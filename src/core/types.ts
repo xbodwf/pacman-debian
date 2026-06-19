@@ -70,6 +70,7 @@ export interface RepoConfig {
 
 export interface Config {
   architecture: string;
+  color: boolean;
   repos: RepoConfig[];
 }
 

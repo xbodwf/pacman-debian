@@ -40,7 +40,7 @@ function loadRepoFile(filePath: string): Record<string, string> {
 }
 
 export function loadConfig(): Config {
-  const cfg: Config = { architecture: 'arm64', repos: [] };
+  const cfg: Config = { architecture: 'arm64', color: false, repos: [] };
   const configPath = findConfig();
   if (!fs.existsSync(configPath)) {
     cfg.repos.push({ name: 'ubuntu', type: 'debian', server: 'http://ports.ubuntu.com/ubuntu-ports', dist: 'noble', components: ['main', 'universe'] });
@@ -69,6 +69,7 @@ export function loadConfig(): Config {
 
     if (inOptions || !cur) {
       if (k === 'architecture') cfg.architecture = v;
+      else if (k === 'color') cfg.color = true;
       continue;
     }
 

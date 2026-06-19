@@ -171,12 +171,13 @@ class RepoProgress {
   private timer: ReturnType<typeof setInterval> | null = null;
   private count = 0;
 
-  init(count: number) {
-    this.count = count;
-    this.rows = new Array(count).fill('');
+  init(names: string[]) {
+    this.count = names.length;
+    this.rows = names.map(n => ` ${color.repo(`${n}.db`)}`);
     if (!process.stdout.isTTY) return;
-    // Print one line per repo
-    for (let i = 0; i < count; i++) process.stdout.write('\n');
+    for (let i = 0; i < names.length; i++) process.stdout.write(this.rows[i] + '\n');
+    // Cursor is now at bottom. First flush will move up and update in-place.
+    this.dirty = names.map((_, i) => i); // mark all as dirty
     this.timer = setInterval(() => this.flush(), 200);
   }
 
@@ -235,7 +236,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
   if (!fs.existsSync(PKG_CACHE)) fs.mkdirSync(PKG_CACHE, { recursive: true });
   const cols = process.stdout.columns || 80;
   const progress = new RepoProgress();
-  progress.init(cfg.repos.length);
+  progress.init(cfg.repos.map(r => r.name));
 
   const tasks = cfg.repos.map(async (repo, idx) => {
     const fname = `${repo.name}.db`;
