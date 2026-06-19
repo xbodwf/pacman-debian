@@ -10,6 +10,7 @@ export interface RemoveOptions {
   noscriptlet?: boolean;
   cascade?: boolean;
   nodeps?: boolean;
+  nosave?: boolean;
   print?: boolean;
 }
 
