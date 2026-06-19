@@ -332,8 +332,8 @@ export async function syncRepos(force: boolean = false): Promise<void> {
         for (let pi = 0; pi < chunk.length; pi++) {
           const p = chunk[pi];
           const json = JSON.stringify(p);
-          const desc = p.description || '';
-          const provides = (p.provides || '').replace(/\t/g, ' ').replace(/\n/g, ' ');
+          const desc = (p.description || '').replace(/\\/g, '\\\\').replace(/\t/g, '\\t').replace(/\n/g, '\\n');
+          const provides = (p.provides || '').replace(/\\/g, '\\\\').replace(/\t/g, '\\t').replace(/\n/g, '\\n');
           idxLines.push(`${p.package} ${desc}\t${provides}\t${fname}\t${offset}`);
           offset += Buffer.byteLength(json, 'utf8') + 1;
         }
