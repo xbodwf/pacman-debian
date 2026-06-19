@@ -193,7 +193,7 @@ export async function parseArgs(args: string[]): Promise<void> {
     }
     if (doRefresh && doUpgrade) { await syncAndUpgrade(opts); return; }
     if (doRefresh) {
-      console.log(t_('syncing_databases'));
+      process.stdout.write(t_('syncing_databases') + '\n');
       await syncRepos(forceRefresh);
       return;
     }

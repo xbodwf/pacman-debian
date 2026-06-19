@@ -173,11 +173,13 @@ class RepoProgress {
 
   init(names: string[]) {
     this.count = names.length;
+    // Initialize rows with just the repo name (shown before download starts)
     this.rows = names.map(n => ` ${color.repo(`${n}.db`)}`);
     if (!process.stdout.isTTY) return;
-    for (let i = 0; i < names.length; i++) process.stdout.write(this.rows[i] + '\n');
-    // Cursor is now at bottom. First flush will move up and update in-place.
-    this.dirty = names.map((_, i) => i); // mark all as dirty
+    // Reserve lines for each repo (writes repo name immediately)
+    for (let i = 0; i < names.length; i++) process.stdout.write(` ${color.repo(`${names[i]}.db`)}\n`);
+    // Mark all as dirty so first flush updates them
+    this.dirty = names.map((_, i) => i);
     this.timer = setInterval(() => this.flush(), 200);
   }
 

@@ -50,7 +50,7 @@ async function collectUpgradeCandidates(): Promise<UpgradeTarget[]> {
 }
 
 export async function syncAndUpgrade(opts: InstallOptions = {}, force = false): Promise<void> {
-  console.log(t('syncing_databases'));
+  process.stdout.write(t('syncing_databases') + '\n');
   await syncRepos(force);
   await doUpgrade(opts);
 }
