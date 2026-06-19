@@ -394,7 +394,6 @@ export function searchRepo(query: string): RepoPkg[] {
 }
 
 export function findInRepo(pkgName: string): RepoPkg | undefined {
-  // Fast path: scan JSONL chunks with native Node (no external command)
   const pattern = `"package":"${pkgName}"`;
   const cfg = loadConfig();
   for (const repo of cfg.repos) {
@@ -403,10 +402,16 @@ export function findInRepo(pkgName: string): RepoPkg | undefined {
     const files = fs.readdirSync(pkgDir).filter(f => f.endsWith('.jsonl')).sort();
     for (const f of files) {
       const lines = fs.readFileSync(path.join(pkgDir, f), 'utf8').split('\n');
-      for (const line of lines) {
-        if (line.includes(pattern)) {
-          try { return JSON.parse(line) as RepoPkg; } catch { return undefined; }
+      // Two-pointer: scan from both ends toward center
+      let i = 0, j = lines.length - 1;
+      while (i <= j) {
+        if (lines[i] && lines[i].includes(pattern)) {
+          try { return JSON.parse(lines[i]) as RepoPkg; } catch { return undefined; }
         }
+        if (i !== j && lines[j] && lines[j].includes(pattern)) {
+          try { return JSON.parse(lines[j]) as RepoPkg; } catch { return undefined; }
+        }
+        i++; j--;
       }
     }
   }
