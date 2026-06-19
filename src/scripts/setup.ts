@@ -199,6 +199,12 @@ async function main() {
       try {
         execSync(`make -C "${libDir}"`, { stdio: 'pipe', timeout: 30000 });
         execSync(`make -C "${libDir}" install`, { stdio: 'pipe', timeout: 10000 });
+        // Create versioned symlink (expac etc. look for libalpm.so.16)
+        const so16 = '/usr/local/lib/libalpm.so.16';
+        if (!fs.existsSync(so16)) {
+          fs.symlinkSync('libalpm.so', so16);
+          execSync('/sbin/ldconfig', { stdio: 'pipe' });
+        }
         console.log('  libalpm.so built and installed to /usr/local/lib/');
       } catch (e: any) {
         console.error('  Warning: libalpm build failed:', e.message);
