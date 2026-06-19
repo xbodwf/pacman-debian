@@ -16,7 +16,7 @@ if (process.getuid && process.getuid() !== 0) {
   }
 }
 
-parseArgs(args).catch(e => {
+parseArgs(args).then(() => process.exit(0)).catch(e => {
   console.error(`error: ${e.message}`);
   process.exit(1);
 });
