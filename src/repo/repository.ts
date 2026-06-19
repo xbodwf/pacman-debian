@@ -321,13 +321,17 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const CHUNK = 5000;
       const chunks = Math.ceil(pkgs.length / CHUNK);
       const writeTasks = [];
+      const idxLines: string[] = [];
       for (let c = 0; c < chunks; c++) {
         const chunk = pkgs.slice(c * CHUNK, (c + 1) * CHUNK);
         const lines = chunk.map(p => JSON.stringify(p)).join('\n');
-        writeTasks.push(fs.promises.writeFile(path.join(pkgDir, `${String(c).padStart(5, '0')}.jsonl`), lines + '\n'));
+        const fname = `${String(c).padStart(5, '0')}.jsonl`;
+        writeTasks.push(fs.promises.writeFile(path.join(pkgDir, fname), lines + '\n'));
+        chunk.forEach((p, i) => idxLines.push(`${p.package}:${fname}:${i}`));
       }
       await Promise.all(writeTasks);
       await fs.promises.writeFile(path.join(pkgDir, '.info'), JSON.stringify({ total: pkgs.length, chunks, chunkSize: CHUNK }));
+      await fs.promises.writeFile(path.join(pkgDir, 'packages.idx'), idxLines.join('\n') + '\n');
 
       // Final line
       const elapsed = (Date.now() - startTime) / 1000;
@@ -394,24 +398,33 @@ export function searchRepo(query: string): RepoPkg[] {
 }
 
 export function findInRepo(pkgName: string): RepoPkg | undefined {
-  const pattern = `"package":"${pkgName}"`;
   const cfg = loadConfig();
   for (const repo of cfg.repos) {
     const pkgDir = path.join(PKG_CACHE, repo.name);
     if (!fs.existsSync(pkgDir)) continue;
-    const files = fs.readdirSync(pkgDir).filter(f => f.endsWith('.jsonl')).sort();
-    for (const f of files) {
-      const lines = fs.readFileSync(path.join(pkgDir, f), 'utf8').split('\n');
-      // Two-pointer: scan from both ends toward center
-      let i = 0, j = lines.length - 1;
-      while (i <= j) {
-        if (lines[i] && lines[i].includes(pattern)) {
-          try { return JSON.parse(lines[i]) as RepoPkg; } catch { return undefined; }
-        }
-        if (i !== j && lines[j] && lines[j].includes(pattern)) {
-          try { return JSON.parse(lines[j]) as RepoPkg; } catch { return undefined; }
-        }
-        i++; j--;
+
+    // Use packages.idx for fast lookup (built during sync)
+    const idxPath = path.join(pkgDir, 'packages.idx');
+    if (!fs.existsSync(idxPath)) continue;
+    const idx = fs.readFileSync(idxPath, 'utf8').split('\n');
+
+    // Binary search in sorted index
+    const target = `${pkgName}:`;
+    let lo = 0, hi = idx.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      const line = idx[mid];
+      if (!line) { lo = mid + 1; continue; }
+      if (line < target) lo = mid + 1;
+      else if (line > target) hi = mid - 1;
+      else {
+        // Found: pkgName:chunkFile:lineNum
+        const parts = line.split(':');
+        const chunkFile = parts[1];
+        const lineNum = parseInt(parts[2], 10);
+        if (!chunkFile || isNaN(lineNum)) break;
+        const jsonl = fs.readFileSync(path.join(pkgDir, chunkFile), 'utf8').split('\n');
+        try { return JSON.parse(jsonl[lineNum]) as RepoPkg; } catch { return undefined; }
       }
     }
   }
