@@ -162,26 +162,63 @@ async function syncArch(repo: RepoConfig, globalArch: string, ifModifiedSince?: 
   return parseArchDb(tar, repo.name);
 }
 
+// ---- Shared multi-line display (parallel-safe) ----
+// All repos write to a shared buffer; a single timer redraws everything
+// so cursor movement never races.
+class ProgressDisplay {
+  private lines: string[] = [];
+  private dirty = false;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private started = false;
+
+  init(count: number) {
+    this.lines = new Array(count).fill('');
+    if (!process.stdout.isTTY) return;
+    // Reserve N blank lines
+    for (let i = 0; i < count; i++) process.stdout.write('\n');
+    cursorTo(process.stdout, 0, 0);
+    this.dirty = true;
+    this.started = true;
+    this.timer = setInterval(() => this.flush(), 200);
+  }
+
+  setLine(idx: number, text: string) {
+    if (idx < 0 || idx >= this.lines.length) return;
+    if (this.lines[idx] === text) return; // no change
+    this.lines[idx] = text;
+    this.dirty = true;
+  }
+
+  finish() {
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    if (!process.stdout.isTTY) {
+      // Print all buffered lines
+      for (const l of this.lines) process.stdout.write(l + '\n');
+      return;
+    }
+    this.flush();
+    cursorTo(process.stdout, 0, this.lines.length);
+    process.stdout.write('\n');
+  }
+
+  private flush() {
+    if (!this.dirty) return;
+    this.dirty = false;
+    for (let i = 0; i < this.lines.length; i++) {
+      cursorTo(process.stdout, 0, i);
+      clearLine(process.stdout, 1);
+      process.stdout.write(this.lines[i]);
+    }
+  }
+}
+
 // ---- Main sync ----
 export async function syncRepos(force: boolean = false): Promise<void> {
   const cfg = loadConfig();
   if (!fs.existsSync(PKG_CACHE)) fs.mkdirSync(PKG_CACHE, { recursive: true });
   const cols = process.stdout.columns || 80;
-  const repoCount = cfg.repos.length;
-  const isTTY = process.stdout.isTTY;
-
-  // Reserve one line per repo so each gets a dedicated row
-  if (isTTY) {
-    for (let i = 0; i < repoCount; i++) process.stdout.write('\n');
-    cursorTo(process.stdout, 0, 0);
-  }
-
-  function writeAt(row: number, text: string) {
-    if (!isTTY) { process.stdout.write(text + '\n'); return; }
-    cursorTo(process.stdout, 0, row);
-    clearLine(process.stdout, 1);
-    process.stdout.write(text);
-  }
+  const display = new ProgressDisplay();
+  display.init(cfg.repos.length);
 
   const tasks = cfg.repos.map(async (repo, idx) => {
     const fname = `${repo.name}.db`;
@@ -204,16 +241,8 @@ export async function syncRepos(force: boolean = false): Promise<void> {
     let prevBytes = 0;
     let smoothedRate = 0;
 
-    const updateProgress = () => {
-      const now = Date.now();
-      if (now - prevTime < 200) return;
-
-      const chunkTime = Math.max((now - prevTime) / 1000, 0.001);
-      const instantRate = (totalDownloaded - prevBytes) / chunkTime;
-      smoothedRate = smoothedRate > 0 ? (instantRate + 2 * smoothedRate) / 3 : instantRate;
-      prevTime = now;
-      prevBytes = totalDownloaded;
-
+    // Build a progress line text (no stdout write)
+    const progressText = () => {
       const dl = humanSize(totalDownloaded, 1);
       const rateStr = formatRate(smoothedRate);
       const eta = smoothedRate > 0 && totalExpected > 0 ? (totalExpected - totalDownloaded) / smoothedRate : 0;
@@ -221,10 +250,19 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const pct = totalExpected > 0 ? Math.round(totalDownloaded / totalExpected * 100) : 0;
       const bar = drawProgressBar(pct, cols);
       const pad = Math.max(20 - fname.length, 1);
+      return ` ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`;
+    };
 
-      writeAt(idx,
-        ` ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`
-      );
+    const updateProgress = () => {
+      const now = Date.now();
+      if (now - prevTime < 200) return;
+      const chunkTime = Math.max((now - prevTime) / 1000, 0.001);
+      smoothedRate = smoothedRate > 0
+        ? ((totalDownloaded - prevBytes) / chunkTime + 2 * smoothedRate) / 3
+        : (totalDownloaded - prevBytes) / chunkTime;
+      prevTime = now;
+      prevBytes = totalDownloaded;
+      display.setLine(idx, progressText());
     };
 
     try {
@@ -243,7 +281,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       }
 
       if (ifModifiedSince && pkgs.length === 0 && totalDownloaded === 0) {
-        writeAt(idx, ` ${color.repo(fname)} ${color.ok(t('repo_already_uptodate', fname))}`);
+        display.setLine(idx, ` ${color.repo(fname)} ${color.ok(t('repo_already_uptodate', fname))}`);
         return;
       }
 
@@ -267,22 +305,16 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const rateStr = formatRate(finalRate);
       const bar = drawProgressBar(100, cols);
       const pad = Math.max(20 - fname.length, 1);
-
-      writeAt(idx,
+      display.setLine(idx,
         ` ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}`
       );
     } catch (e: any) {
-      writeAt(idx, ` ${color.repo(fname)} ${color.error(t('repo_sync_failed'))}: ${e.message}`);
+      display.setLine(idx, ` ${color.repo(fname)} ${color.error(t('repo_sync_failed'))}: ${e.message}`);
     }
   });
 
   await Promise.all(tasks);
-
-  // Move cursor past the output area and ensure shell prompt is on a fresh line
-  if (isTTY) {
-    cursorTo(process.stdout, 0, repoCount);
-    process.stdout.write('\n');
-  }
+  display.finish();
   invalidateCache();
 }
 
