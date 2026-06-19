@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { parseArgs } from './cli/pacman';
+import { t } from './i18n';
 
 const args = process.argv.slice(2);
 
@@ -9,7 +10,7 @@ if (process.getuid && process.getuid() !== 0) {
   if (!ok) {
     const qFlags = ['-i', '-o', '-l', '-s', '--info', '--owns', '--list', '--search'];
     if (!(args[0]?.startsWith('-Q') && qFlags.includes(args[1]))) {
-      console.error('error: you must be root to perform this operation');
+      console.error(t('error_need_root'));
       process.exit(1);
     }
   }

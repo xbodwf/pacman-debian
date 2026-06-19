@@ -10,6 +10,7 @@ import { iterateTar, readFileFromTar } from '../core/tar';
 import { parseDescFile } from '../core/pkgfile';
 import type { RepoPkg, RepoConfig } from '../core/types';
 import { color } from '../ui/colors';
+import { t } from '../i18n';
 
 const CACHE_DIR = '/var/cache/pacman-debian';
 const PKG_CACHE = path.join(CACHE_DIR, 'packages');
@@ -188,7 +189,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       }
 
       if (ifModifiedSince && pkgs.length === 0) {
-        process.stdout.write(` ${color.repo(fname)} ${color.ok('已经是最新版本')}\n`);
+        process.stdout.write(` ${color.repo(fname)} ${color.ok(t('repo_already_uptodate', fname))}\n`);
         return;
       }
 
@@ -204,13 +205,13 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       }
       fs.writeFileSync(path.join(pkgDir, '.info'), JSON.stringify({ total: pkgs.length, chunks, chunkSize: CHUNK }));
 
-      process.stdout.write(` ${color.repo(fname)} ${color.ok(pkgs.length + ' 个软件包已同步')}\n`);
+      process.stdout.write(` ${color.repo(fname)} ${color.ok(t('repo_synced_count', String(pkgs.length)))}\n`);
 
       if (pkgs.length === 0) {
-        console.error(`  ${color.warn('WARNING:')} ${repo.name} 返回 0 个软件包（请检查 pacman.conf 中的架构设置）`);
+        console.error(`  ${color.warn(t('warn_repo_zero_packages', repo.name))}`);
       }
     } catch (e: any) {
-      process.stdout.write(` ${color.repo(fname)} ${color.error('同步失败')}: ${e.message}\n`);
+      process.stdout.write(` ${color.repo(fname)} ${color.error(t('repo_sync_failed'))}: ${e.message}\n`);
     }
   });
 

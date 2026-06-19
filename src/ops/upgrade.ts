@@ -1,28 +1,13 @@
 import { readDpkgStatus } from '../db/dpkg-compat';
 import { syncRepos, findInRepo, downloadPkg } from '../repo/repository';
-import { installPkgFile } from './install';
+import { installDeb, installPkgFile, installPackages, type InstallOptions } from './install';
+import type { RepoPkg } from '../core/types';
 import { confirm } from '../ui/prompt';
-import type { InstallOptions } from '../core/options';
-
-interface UpgradeTarget {
-  name: string;
-  oldVer: string;
-  newVer: string;
-}
-
-async function collectUpgradeCandidates(): Promise<UpgradeTarget[]> {
-  const targets: UpgradeTarget[] = [];
-  const dpkg = readDpkgStatus();
-  for (const [name, pkg] of dpkg) {
-    const rp = findInRepo(name);
-    if (!rp || rp.version === pkg.version) continue;
-    targets.push({ name, oldVer: pkg.version, newVer: rp.version });
-  }
-  return targets;
-}
+import { formatBytes } from '../ui/format';
+import { t } from '../i18n';
 
 export async function syncAndUpgrade(opts: InstallOptions = {}, force = false): Promise<void> {
-  console.log(':: Synchronizing package databases...');
+  console.log(t('syncing_databases'));
   await syncRepos(force);
   await doUpgrade(opts);
 }

@@ -6,6 +6,7 @@ import { syncRepos, searchRepo, findInRepo, downloadPkg, getRepoCache } from '..
 import { initDb, loadDatabase, saveDatabase, getPackage } from '../db/database';
 import { readDpkgStatus } from '../db/dpkg-compat';
 import { setNoConfirm } from '../ui/prompt';
+import { t as t_ } from '../i18n';
 import * as fs from 'node:fs';
 import pkg from '../../package.json';
 import type { InstallOptions } from '../core/options';
@@ -202,7 +203,7 @@ export async function parseArgs(args: string[]): Promise<void> {
     }
     if (doRefresh && doUpgrade) { await syncAndUpgrade(opts); return; }
     if (doRefresh) {
-      console.log(':: Synchronizing package databases...');
+      console.log(t_('syncing_databases'));
       await syncRepos(forceRefresh);
       return;
     }
