@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as https from 'node:https';
 import * as http from 'node:http';
 import * as zlib from 'node:zlib';
+import { cursorTo, clearLine } from 'node:readline';
 import { loadConfig } from './config';
 import { parseControlFile } from '../core/control';
 import { decompress } from '../core/compress';
@@ -166,12 +167,29 @@ export async function syncRepos(force: boolean = false): Promise<void> {
   const cfg = loadConfig();
   if (!fs.existsSync(PKG_CACHE)) fs.mkdirSync(PKG_CACHE, { recursive: true });
   const cols = process.stdout.columns || 80;
+  const repoCount = cfg.repos.length;
+  const isTTY = process.stdout.isTTY;
 
-  const progressLine = (text: string) => {
-    process.stdout.write(`\r${text}`);
-  };
+  // Pre-print blank lines, one per repo. We'll update them in-place
+  // using ANSI cursor control so each repo gets its own progress line.
+  if (isTTY) {
+    for (let i = 0; i < repoCount; i++) process.stdout.write('\n');
+    cursorTo(process.stdout, 0, 0);
+  }
 
-  const tasks = cfg.repos.map(async (repo) => {
+  function writeLine(row: number, text: string, newline = false) {
+    if (!isTTY) { process.stdout.write(text + (newline ? '\n' : '') + '\n'); return; }
+    cursorTo(process.stdout, 0, row);
+    process.stdout.write(text);
+    clearLine(process.stdout, 1);
+    if (newline) {
+      // Move to after the last line so subsequent \n output lands correctly
+      cursorTo(process.stdout, 0, repoCount);
+      process.stdout.write('\n');
+    }
+  }
+
+  const tasks = cfg.repos.map(async (repo, idx) => {
     const fname = `${repo.name}.db`;
     let ifModifiedSince: string | undefined;
 
@@ -210,7 +228,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const bar = drawProgressBar(pct, cols);
       const pad = Math.max(20 - fname.length, 1);
 
-      progressLine(
+      writeLine(idx,
         ` ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`
       );
     };
@@ -231,7 +249,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       }
 
       if (ifModifiedSince && pkgs.length === 0 && totalDownloaded === 0) {
-        process.stdout.write(`\r ${color.repo(fname)} ${color.ok(t('repo_already_uptodate', fname))}\n`);
+        writeLine(idx, ` ${color.repo(fname)} ${color.ok(t('repo_already_uptodate', fname))}`, true);
         return;
       }
 
@@ -247,7 +265,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       }
       fs.writeFileSync(path.join(pkgDir, '.info'), JSON.stringify({ total: pkgs.length, chunks, chunkSize: CHUNK }));
 
-      // Final line (no updateProgress call — goes straight to final output)
+      // Final line
       const elapsed = (Date.now() - startTime) / 1000;
       const totalSec = Math.round(elapsed);
       const finalRate = elapsed > 0 ? totalDownloaded / elapsed : 0;
@@ -256,11 +274,12 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const bar = drawProgressBar(100, cols);
       const pad = Math.max(20 - fname.length, 1);
 
-      process.stdout.write(
-        `\r ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}\n`
+      writeLine(idx,
+        ` ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}`,
+        true
       );
     } catch (e: any) {
-      process.stdout.write(`\r ${color.repo(fname)} ${color.error(t('repo_sync_failed'))}: ${e.message}\n`);
+      writeLine(idx, ` ${color.repo(fname)} ${color.error(t('repo_sync_failed'))}: ${e.message}`, true);
     }
   });
 
