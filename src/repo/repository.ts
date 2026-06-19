@@ -175,8 +175,9 @@ class ProgressDisplay {
     this.lines = new Array(count).fill('');
     if (!process.stdout.isTTY) return;
     // Reserve N blank lines
+    // Leave row 0 for the header, reserve rows 1..count
     for (let i = 0; i < count; i++) process.stdout.write('\n');
-    cursorTo(process.stdout, 0, 0);
+    cursorTo(process.stdout, 0, 1);
     this.dirty = true;
     this.started = true;
     this.timer = setInterval(() => this.flush(), 200);
@@ -197,7 +198,7 @@ class ProgressDisplay {
       return;
     }
     this.flush();
-    cursorTo(process.stdout, 0, this.lines.length);
+    cursorTo(process.stdout, 0, this.lines.length + 1);
     process.stdout.write('\n');
   }
 
@@ -205,7 +206,7 @@ class ProgressDisplay {
     if (!this.dirty) return;
     this.dirty = false;
     for (let i = 0; i < this.lines.length; i++) {
-      cursorTo(process.stdout, 0, i);
+      cursorTo(process.stdout, 0, i + 1);
       clearLine(process.stdout, 1);
       process.stdout.write(this.lines[i]);
     }
