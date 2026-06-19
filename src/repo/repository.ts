@@ -167,6 +167,10 @@ export async function syncRepos(force: boolean = false): Promise<void> {
   if (!fs.existsSync(PKG_CACHE)) fs.mkdirSync(PKG_CACHE, { recursive: true });
   const cols = process.stdout.columns || 80;
 
+  const progressLine = (text: string) => {
+    process.stdout.write(`\r${text}`);
+  };
+
   const tasks = cfg.repos.map(async (repo) => {
     const fname = `${repo.name}.db`;
     let ifModifiedSince: string | undefined;
@@ -188,9 +192,9 @@ export async function syncRepos(force: boolean = false): Promise<void> {
     let prevBytes = 0;
     let smoothedRate = 0;
 
-    const updateProgress = (force = false) => {
+    const updateProgress = () => {
       const now = Date.now();
-      if (!force && now - prevTime < 200) return;
+      if (now - prevTime < 200) return;
 
       const chunkTime = Math.max((now - prevTime) / 1000, 0.001);
       const instantRate = (totalDownloaded - prevBytes) / chunkTime;
@@ -206,8 +210,8 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const bar = drawProgressBar(pct, cols);
       const pad = Math.max(20 - fname.length, 1);
 
-      process.stdout.write(
-        `\r ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`
+      progressLine(
+        ` ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`
       );
     };
 
@@ -216,12 +220,12 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       if (repo.type === 'arch') {
         pkgs = await syncArch(repo, cfg.architecture, ifModifiedSince, (rec, tot) => {
           totalDownloaded = rec; totalExpected = tot;
-          updateProgress(false);
+          updateProgress();
         });
       } else {
         const result = await syncDebian(repo, cfg.architecture, ifModifiedSince, (rec, tot) => {
           totalDownloaded = rec; totalExpected = tot;
-          updateProgress(false);
+          updateProgress();
         });
         pkgs = result.pkgs;
       }
@@ -242,9 +246,8 @@ export async function syncRepos(force: boolean = false): Promise<void> {
         fs.writeFileSync(path.join(pkgDir, `${String(c).padStart(5, '0')}.jsonl`), lines + '\n');
       }
       fs.writeFileSync(path.join(pkgDir, '.info'), JSON.stringify({ total: pkgs.length, chunks, chunkSize: CHUNK }));
-      updateProgress(true);
 
-      // Final line
+      // Final line (no updateProgress call — goes straight to final output)
       const elapsed = (Date.now() - startTime) / 1000;
       const totalSec = Math.round(elapsed);
       const finalRate = elapsed > 0 ? totalDownloaded / elapsed : 0;
@@ -256,10 +259,6 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       process.stdout.write(
         `\r ${color.repo(fname)}${' '.repeat(pad)}${color.size(dl.val.padStart(6))} ${dl.unit}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}\n`
       );
-
-      if (pkgs.length === 0) {
-        console.error(`  ${color.warn(t('warn_repo_zero_packages', repo.name))}`);
-      }
     } catch (e: any) {
       process.stdout.write(`\r ${color.repo(fname)} ${color.error(t('repo_sync_failed'))}: ${e.message}\n`);
     }
