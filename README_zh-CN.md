@@ -61,7 +61,7 @@ sudo pacman -R neofetch
 
 ```ini
 [options]
-Architecture = arm64
+Architecture = auto
 
 [bookworm]
 Include = /etc/pacman.d/debian-bookworm
@@ -84,7 +84,7 @@ Arch 仓库的包含文件（`/etc/pacman.d/arch-extra`）：
 ```
 Server = http://mirror.archlinuxarm.org/$arch/$repo
 Type = arch
-Architecture = aarch64
+Architecture = auto
 ```
 
 安装时会创建 `/etc/pacman.conf` → `/etc/pacman-debian/pacman.conf` 符号链接，
@@ -97,7 +97,7 @@ Architecture = aarch64
 $ pacman-conf
 # pacman-debian configuration
 [options]
-Architecture = arm64
+Architecture = auto
 
 [bookworm]
 Server = https://mirrors.tuna.tsinghua.edu.cn/debian
@@ -108,7 +108,7 @@ Components = main contrib non-free non-free-firmware
 [extra]
 Server = http://mirror.archlinuxarm.org/$arch/$repo
 Type = arch
-Architecture = aarch64
+Architecture = auto
 ```
 
 ## 数据库
@@ -136,15 +136,28 @@ Architecture = aarch64
 
 ### 仓库缓存：`/var/cache/pacman-debian/packages/`
 
-每个仓库以 JSON Lines 块形式缓存（每个 `.jsonl` 文件 5000 个包），
-无需将全部数据加载到内存即可快速查找单个包。
+每个仓库以 JSON Lines 块形式缓存（每个 `.jsonl` 文件 5000 个包）。
+同步时还会生成全局排序的 `packages.idx` 索引，格式：
+`包名 描述\tprovides\t分块文件\t字节偏移`
 
-单包操作如 `-S <pkg>` 使用 `findInRepo()` — 在目标 JSONL 块上进行原生
-Node.js 逐行扫描。由于每行都是一个完整的 JSON 对象，扫描可在
-O(N/分块数) 时间内找到目标包，无需解析其余 15 MB 数据。
+```
+/var/cache/pacman-debian/packages/
+├── bookworm/
+│   ├── 00000.jsonl   # JSON Lines, ~5000 包/块
+│   ├── ...
+│   └── packages.idx  # 全局排序索引 (~200KB)
+└── ...
+```
 
-列表操作（`-Sl`、`-Ss`、`-Su`）需要全量解析所有 JSONL 块，因为需要
-获取每个包的信息。
+**查找路径：**
+
+| 操作 | 方法 | 原因 |
+|------|------|------|
+| `-S <pkg>` / `-Qo` | 二分搜索 `packages.idx` → seek JSONL | O(log N)，只读一行 |
+| `-Ss` | 逐行扫 `packages.idx`（包名+描述）→ seek JSONL | ~1.4MB 扫描，不解析 JSON |
+| `-Sl` | 扫 `packages.idx` → seek 每个包 | 全量懒加载 |
+| 依赖 provides | 扫 `packages.idx` provides 字段 | 纯索引，不读 JSONL |
+| `-Qi` / `-Ql` | dpkg 状态或本地数据库 | 不涉及缓存 |
 
 ## 仓库支持
 
@@ -227,7 +240,8 @@ makepkg --syncdeps --install
 |------|------|
 | `pacman -R <pkg>` | 删除包 |
 | `pacman -Rs <pkg>` | 删除包及未使用的依赖 |
-| `pacman -Rns <pkg>` | 删除包、依赖并跳过脚本 |
+| `pacman -Rn <pkg>` | 删除包及其配置文件 |
+| `pacman -Rns <pkg>` | 删除包、依赖和配置文件 |
 | `pacman -Rc <pkg>` | 级联删除：删除依赖该包的所有包 |
 | `pacman -Rdd <pkg>` | 跳过依赖检查强制删除 |
 | `pacman -Rp <pkg>` | 打印将要删除的内容（干运行） |
@@ -275,13 +289,21 @@ makepkg --syncdeps --install
 | `--noscriptlet` | 不执行安装脚本 |
 | `--print` | 干运行：显示将要执行的操作但不实际执行 |
 
+### 配置选项
+
+| 选项 | 说明 |
+|------|------|
+| `Color` | 启用彩色输出（放在 `[options]` 段） |
+| `Architecture` | 设置目标架构（默认 `auto`） |
+| `IgnorePkg` | 跳过指定包的升级 |
+
 ## 依赖引擎
 
 依赖解析器（`src/core/deps.ts`）支持：
 
 - 带版本约束的包名解析（`>=`、`<=`、`=`）
 - OR 依赖（`|`）
-- 架构限定符（`:arm64`）
+- 架构限定符（如 `:arm64`、`:amd64`）
 - Debian（逗号分隔）和 Arch（空格分隔）两种格式
 - 带预加载 DB 状态的 BFS 解析
 - 已安装和待安装包之间的冲突检测
@@ -374,11 +396,24 @@ make -C lib/pac4deb       # 构建 libalpm.so
 ## 项目状态
 
 该项目在 v7.1.0 时更名为 `pacman-debian`。目前在 Debian 12 上
-可用于日常包管理。主要限制：
+可用于日常包管理。已有功能：
+
+- **性能优化**：`packages.idx` 索引实现亚秒级单包查找。`-Ss` 只扫索引
+  （不解析 JSON）。全量 `-Sl` 通过索引 seek。总共约 64k 包。
+- **并行同步**：多仓库并发下载，每仓库独立进度行。HTTP 条件请求（304）
+  跳过未变更仓库。
+- **多语言**：通过 `$LANG` 自动切换中英文。消息目录在 `src/i18n/`。
+- **颜色输出**：遵守 `pacman.conf` 的 `Color` 选项。颜色方案匹配官方
+  pacman（品红=仓库、绿=包名、红=错误）。
+- **权限分离**：查询命令（`-Q`、`-Ss`、`-Si`、`-Sp`、`-Rp`）无需 root。
+  写操作需要 `sudo`。
+
+主要限制：
 
 - **Arch ARM 二进制仓库需要 glibc 2.38+** — Debian 12 自带 2.36。
   本地 `makepkg` 构建可正常使用。
-- **yay 依赖解析**可在同步数据库中工作，但在复杂 AUR 依赖链上可能失败。
+- **yay/AUR**：libalpm 桩库支持包搜索和依赖解析，但复杂 AUR 依赖链
+  可能因 Debian/Arch 包名差异而失败。
 - **AUR 助手集成**仅测试了 yay（paru、pamac 等未测试）。
 
 ## 许可证

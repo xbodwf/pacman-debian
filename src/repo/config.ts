@@ -40,7 +40,8 @@ function loadRepoFile(filePath: string): Record<string, string> {
 }
 
 export function loadConfig(): Config {
-  const cfg: Config = { architecture: 'arm64', color: false, repos: [] };
+  const nativeArch = process.arch === 'arm64' ? 'aarch64' : process.arch;
+  const cfg: Config = { architecture: nativeArch, color: false, repos: [] };
   const configPath = findConfig();
   if (!fs.existsSync(configPath)) {
     cfg.repos.push({ name: 'ubuntu', type: 'debian', server: 'http://ports.ubuntu.com/ubuntu-ports', dist: 'noble', components: ['main', 'universe'] });

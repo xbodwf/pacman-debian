@@ -21,7 +21,7 @@ packages (including AUR compatibility via yay with a bundled libalpm).
 
 - Node.js 18+ (TypeScript, compiled with `tsc`)
 - pnpm package manager
-- Debian 12 Bookworm (or compatible Debian-based distribution)
+- Debian-based distribution (Debian, Ubuntu, Armbian, Linux Mint, etc.)
 - Root privileges for install, remove, and upgrade operations
 - Build essentials: `gcc`, `make`, `ldconfig`
 
@@ -65,7 +65,7 @@ Example config:
 
 ```ini
 [options]
-Architecture = arm64
+Architecture = auto
 
 [bookworm]
 Include = /etc/pacman.d/debian-bookworm
@@ -88,7 +88,7 @@ Include file for Arch repos (`/etc/pacman.d/arch-extra`):
 ```
 Server = http://mirror.archlinuxarm.org/$arch/$repo
 Type = arch
-Architecture = aarch64
+Architecture = auto
 ```
 
 A symlink at `/etc/pacman.conf` → `/etc/pacman-debian/pacman.conf` is created
@@ -101,7 +101,7 @@ resolved and `$repo`/`$arch` variables substituted:
 $ pacman-conf
 # pacman-debian configuration
 [options]
-Architecture = arm64
+Architecture = auto
 
 [bookworm]
 Server = https://mirrors.tuna.tsinghua.edu.cn/debian
@@ -112,7 +112,7 @@ Components = main contrib non-free non-free-firmware
 [extra]
 Server = http://mirror.archlinuxarm.org/$arch/$repo
 Type = arch
-Architecture = aarch64
+Architecture = auto
 ```
 
 ## Database
@@ -142,15 +142,27 @@ still see the package.
 ### Repository cache: `/var/cache/pacman-debian/packages/`
 
 Each repository is cached in JSON Lines chunks (5000 packages per `.jsonl`
-file) for fast per-package lookup without loading everything into memory.
+file). During sync, a `packages.idx` index is also built — one line per
+package, sorted globally, with format `pkgname description\tprovides\tchunk\toffset`.
 
-Single-package operations like `-S <pkg>` use `findInRepo()` — a native
-Node.js line scan on the target JSONL chunk. Since each line is a complete
-JSON object, the scan finds the exact package in O(N/chunks) time without
-parsing the other 15 MB of data.
+```
+/var/cache/pacman-debian/packages/
+├── bookworm/
+│   ├── 00000.jsonl   # JSON Lines, ~5000 pkg per chunk
+│   ├── ...
+│   └── packages.idx  # Global sorted index (tabs, ~200KB)
+└── ...
+```
 
-List operations (`-Sl`, `-Ss`, `-Su`) do a full parse of all JSONL chunks,
-which is unavoidable since they need every package.
+**Lookup paths:**
+
+| Operation | Method | Why |
+|-----------|--------|-----|
+| `-S <pkg>` / `-Qo` | Binary search `packages.idx` → seek JSONL | O(log N), single line read |
+| `-Ss` | Line-scan `packages.idx` (name + desc) → seek JSONL | ~1.4MB scan, no JSON parse |
+| `-Sl` | Read `packages.idx` → seek each pkg | Lazy-load via index |
+| Dependency provides | Scan `packages.idx` provides field | Index-only, no JSON parse |
+| `-Qi` / `-Ql` | dpkg status or localdb | No cache involved |
 
 ## Repository Support
 
@@ -159,9 +171,10 @@ which is unavoidable since they need every package.
   `Server` URLs.
 - **Arch Linux**: Reads `db.tar.gz` from Arch-compatible repositories.
   Downloaded `.pkg.tar.zst` files are extracted and installed.
-- **Arch ARM**: Binary packages require glibc 2.38+ — Debian 12 ships glibc
-  2.36, so Arch ARM binary repos are **unusable** on Bookworm without a glibc
-  upgrade (which will break the system). Use `makepkg` for local builds instead.
+- **Arch ARM**: Binary packages require glibc 2.38+ — most Debian-based
+  distributions ship glibc 2.36 or older, so Arch ARM binary repos are
+  **unusable** without a glibc upgrade (which will likely break the system).
+  Use `makepkg` for local builds instead.
 
 ## libalpm (libpac4deb)
 
@@ -240,7 +253,9 @@ Flags:
 |---------|-------------|
 | `pacman -R <pkg>` | Remove a package |
 | `pacman -Rs <pkg>` | Remove package and unused dependencies |
-| `pacman -Rns <pkg>` | Remove package, dependencies, and skip scripts |
+| `pacman -Rn <pkg>` | Remove package and its config files (nosave) |
+| `pacman -Rns <pkg>` | Remove package, dependencies, config files |
+| `pacman -Rc <pkg>` | Cascade: remove packages that depend on the target |
 | `pacman -Rc <pkg>` | Cascade: remove packages that depend on the target |
 | `pacman -Rdd <pkg>` | Skip dependency checks during removal |
 | `pacman -Rp <pkg>` | Print what would be removed (dry-run) |
@@ -288,13 +303,21 @@ Flags:
 | `--noscriptlet` | Do not execute install scripts |
 | `--print` | Dry-run: show what would be done without executing |
 
+### Config Options
+
+| Option | Description |
+|--------|-------------|
+| `Color` | Enable colored output (in `[options]` section) |
+| `Architecture` | Set target architecture (default: `auto`) |
+| `IgnorePkg` | Skip upgrade for specified packages |
+
 ## Dependency Engine
 
 The dependency resolver (`src/core/deps.ts`) handles:
 
 - Package name parsing with version constraints (`>=`, `<=`, `=`)
 - OR dependencies (`|`)
-- Architecture qualifiers (`:arm64`)
+- Architecture qualifiers (e.g. `:arm64`, `:amd64`)
 - Both Debian (comma-separated) and Arch (space-separated) formats
 - BFS resolution with pre-loaded DB state
 - Conflict detection across installed and to-be-installed packages
@@ -373,7 +396,7 @@ PACMAN=/usr/local/bin/pacman sudo -E yay -S ponysay
 ```
 
 Note: AUR packages that depend on `python` (not `python3`) are unresolvable
-on Debian 12 since the package is named `python3`. Install `python-is-python3`
+on Debian since the package is named `python3`. Install `python-is-python3`
 or create a symlink to work around this.
 
 ## Build
@@ -389,12 +412,27 @@ make -C lib/pac4deb       # Build libalpm.so
 ## Project Status
 
 This project was renamed to `pacman-debian` at v7.1.0. It is functional for
-day-to-day package management on Debian 12. Key limitations:
+day-to-day package management on Debian-based distributions. Key features:
+
+- **Performance**: `packages.idx` index enables sub-second single-package
+  lookup. `-Ss` scans index only (no JSON parsing). Full `-Sl` uses index
+  seek. ~64k packages across all repos, cached.
+- **Parallel sync**: Repos sync concurrently with per-repo progress display.
+  HTTP conditional requests (304) skip unchanged repos.
+- **i18n**: Full Chinese and English localization via `$LANG` detection.
+  Controlled by JSON message catalogs at `src/i18n/`.
+- **Color**: Respects `Color` option in `pacman.conf [options]`. Matching
+  official pacman color scheme (magenta=repo, green=pkg, red=error).
+- **Root check**: Moved into CLI code — query commands (`-Q`, `-Ss`, `-Si`,
+  `-Sp`, `-Rp`) work without root. Write operations require `sudo`.
+
+Key limitations:
 
 - **Arch ARM binary repos require glibc 2.38+** — Debian 12 ships 2.36.
   Local `makepkg` builds work fine.
-- **yay dependency resolution** works for packages in sync DBs but may fail
-  on complex AUR dependency chains.
+- **yay/AUR**: libalpm stub library enables package search and dependency
+  resolution, but complex AUR dependency chains may fail due to Debian/Arch
+  package naming differences.
 - **No AUR helper integration** beyond yay (paru, pamac, etc. untested).
 
 ## License
