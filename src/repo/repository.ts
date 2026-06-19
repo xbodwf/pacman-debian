@@ -73,7 +73,7 @@ function parseDebianPackages(content: string, repo: string): RepoPkg[] {
   return pkgs;
 }
 
-async function syncDebian(repo: RepoConfig, arch: string, ifModifiedSince?: string, onProgress?: (rec: number, tot: number) => void): Promise<{ pkgs: RepoPkg[]; size: number }> {
+async function syncDebian(repo: RepoConfig, arch: string, ifModifiedSince?: string, onProgress?: (rec: number, tot: number) => void): Promise<{ pkgs: RepoPkg[]; size: number; notModified: boolean }> {
   const all: RepoPkg[] = [];
   let totalSize = 0;
   const comps = repo.components || ['main'];
@@ -86,7 +86,7 @@ async function syncDebian(repo: RepoConfig, arch: string, ifModifiedSince?: stri
         const buf = await downloadFile(url, (rec, tot) => {
           if (onProgress) onProgress(totalSize + rec, totalSize + (tot || 0));
         }, ifModifiedSince);
-        if (buf === null) return { pkgs: [], size: 0 }; // 304
+        if (buf === null) return { pkgs: [], size: 0, notModified: true }; // 304
         gotData = true;
         totalSize += buf.length;
         const text = decompress(buf, `packages.${ext}`).toString('utf8');
@@ -96,7 +96,7 @@ async function syncDebian(repo: RepoConfig, arch: string, ifModifiedSince?: stri
     }
     ifModifiedSince = undefined;
   }
-  return { pkgs: all, size: totalSize };
+  return { pkgs: all, size: totalSize, notModified: false };
 }
 
 function parseArchDb(dbTar: Buffer, repo: string): RepoPkg[] {
@@ -294,20 +294,23 @@ export async function syncRepos(force: boolean = false): Promise<void> {
 
     try {
       let pkgs: RepoPkg[];
+      let notModified = false;
       if (repo.type === 'arch') {
         pkgs = await syncArch(repo, cfg.architecture, ifModifiedSince, (rec, tot) => {
           totalDownloaded = rec; totalExpected = tot;
           updateProgress();
         });
+        notModified = ifModifiedSince !== undefined && pkgs.length === 0 && totalDownloaded === 0;
       } else {
         const result = await syncDebian(repo, cfg.architecture, ifModifiedSince, (rec, tot) => {
           totalDownloaded = rec; totalExpected = tot;
           updateProgress();
         });
         pkgs = result.pkgs;
+        notModified = result.notModified;
       }
 
-      if (ifModifiedSince && pkgs.length === 0 && totalDownloaded === 0) {
+      if (notModified) {
         progress.setRow(idx, ` ${pname}${' '.repeat(namePad - repo.name.length)}${color.ok(t('repo_already_uptodate'))}`);
         return;
       }
