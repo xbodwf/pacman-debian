@@ -240,8 +240,9 @@ export async function parseArgs(args: string[]): Promise<void> {
     if (rest.length === 0) { listInstalled(); return; }
     const qflags = flags || rest[0];
     if (qflags.startsWith('-')) {
+      // -Q -i style: rest = ['-i', 'pkg']
       const q = qflags.slice(1);
-      if (q === 'i') { showInfo(rest[1], false); return; }
+      if (q === 'i') { if (rest[1]) showInfo(rest[1], false); else console.error(t_('error_no_pkg_name')); return; }
       if (q === 'o') { if (rest[1]) queryFile(rest[1]); else console.error(t_('error_no_file')); return; }
       if (q === 'l') { if (rest[1]) listFiles(rest[1]); else console.error(t_('error_no_pkg_name')); return; }
       if (q === 's') { if (rest[1]) { listInstalled(rest[1]); return; } listInstalled(); return; }
@@ -254,36 +255,18 @@ export async function parseArgs(args: string[]): Promise<void> {
       console.error(t_('error_unknown_option', q));
       return;
     }
+    // -Qflag style: flags already extracted from raw (e.g. -Ql → flags='l')
+    if (flags.includes('i')) { if (rest[0]) showInfo(rest[0], false); else console.error(t_('error_no_pkg_name')); return; }
+    if (flags.includes('o')) { if (rest[0]) queryFile(rest[0]); else console.error(t_('error_no_file')); return; }
+    if (flags.includes('l')) { if (rest[0]) listFiles(rest[0]); else console.error(t_('error_no_pkg_name')); return; }
+    if (flags.includes('s')) { listInstalled(rest[0]); return; }
+    if (flags.includes('e')) { listExplicit(); return; }
+    if (flags.includes('d') && flags.includes('t')) { listOrphans(); return; }
+    if (flags.includes('d')) { listDeps(); return; }
+    if (flags.includes('k')) { checkIntegrity(rest[0]); return; }
+    if (flags.includes('q')) { listInstalled(); return; }
     showInfo(rest[0], false);
     return;
-  }
-
-  if (op === 'Q') {
-    if (flags === '') { listInstalled(); return; }
-    if (flags.includes('i')) {
-      if (rest.length === 0) { console.error(t_('error_no_pkg_name')); return; }
-      showInfo(rest[0], false);
-      return;
-    }
-    if (flags.includes('o')) {
-      if (rest.length === 0) { console.error(t_('error_no_file')); return; }
-      queryFile(rest[0]);
-      return;
-    }
-    if (flags.includes('l')) {
-      if (rest.length === 0) { console.error(t_('error_no_pkg_name')); return; }
-      listFiles(rest[0]);
-      return;
-    }
-    if (flags.includes('s')) { listInstalled(rest[0]); return; }
-
-    if ((flags.includes('d') && flags.includes('t')) || flags.includes('td') || flags.includes('dt')) { listOrphans(); return; }
-    if (flags.includes('e') && !flags.includes('d') && !flags.includes('t')) { listExplicit(); return; }
-    if (flags.includes('d') && !flags.includes('e') && !flags.includes('t')) { listDeps(); return; }
-    if (flags.includes('k')) { checkIntegrity(rest[0]); return; }
-
-    console.error(`error: unknown option '-Q${flags}'`);
-    process.exit(1);
   }
 
   if (op === 'D') {
