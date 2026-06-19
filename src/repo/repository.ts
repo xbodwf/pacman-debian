@@ -308,7 +308,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       }
 
       if (ifModifiedSince && pkgs.length === 0 && totalDownloaded === 0) {
-        progress.setRow(idx, ` ${pname}${' '.repeat(namePad - repo.name.length)}${color.ok(t('repo_already_uptodate', repo.name))}`);
+        progress.setRow(idx, ` ${pname}${' '.repeat(namePad - repo.name.length)}${color.ok(t('repo_already_uptodate'))}`);
         return;
       }
 

@@ -2,7 +2,7 @@
   "syncing_databases": ":: 正在同步软件包数据库...",
   "starting_upgrade": ":: 开始全面系统升级...",
   "nothing_to_do": " 没有可更新的软件包",
-  "repo_already_uptodate": "{0} 已经是最新版本",
+  "repo_already_uptodate": "已经是最新版本",
   "repo_synced_count": "{0} 个软件包已同步",
   "repo_sync_failed": "同步失败",
   "warn_repo_zero_packages": "WARNING: {0} 返回 0 个软件包（请检查 pacman.conf 中的架构设置）",

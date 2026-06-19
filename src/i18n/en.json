@@ -2,7 +2,7 @@
   "syncing_databases": ":: Synchronizing package databases...",
   "starting_upgrade": ":: Starting full system upgrade...",
   "nothing_to_do": " there is nothing to do",
-  "repo_already_uptodate": "{0} is up to date",
+  "repo_already_uptodate": "is up to date",
   "repo_synced_count": "{0} packages synced",
   "repo_sync_failed": "sync failed",
   "warn_repo_zero_packages": "WARNING: {0} returned 0 packages (check pacman.conf architecture setting)",
