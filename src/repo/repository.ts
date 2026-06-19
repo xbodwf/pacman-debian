@@ -332,7 +332,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
         for (let pi = 0; pi < chunk.length; pi++) {
           const json = JSON.stringify(chunk[pi]);
           idxLines.push(`${chunk[pi].package}:${fname}:${offset}`);
-          offset += json.length + 1; // +1 for \n
+          offset += Buffer.byteLength(json, 'utf8') + 1; // +1 for \n
         }
       }
       await Promise.all(writeTasks);
