@@ -342,6 +342,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       await fs.promises.writeFile(path.join(pkgDir, '.info'), JSON.stringify({ total: pkgs.length, chunks, chunkSize: CHUNK }));
       // Remove legacy all.json
       try { fs.unlinkSync(path.join(pkgDir, 'all.json')); } catch {}
+      idxLines.sort(); // global sort so binary search works
       await fs.promises.writeFile(path.join(pkgDir, 'packages.idx'), idxLines.join('\n') + '\n');
 
 
@@ -366,7 +367,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
 }
 
 /** Read a pkg from JSONL by byte offset (shared helper) */
-function readPkgAt(pkgDir: string, chunkFile: string, byteOff: number): RepoPkg | undefined {
+export function readPkgAt(pkgDir: string, chunkFile: string, byteOff: number): RepoPkg | undefined {
   const fd = fs.openSync(path.join(pkgDir, chunkFile), 'r');
   const buf = Buffer.alloc(65536);
   const bytes = fs.readSync(fd, buf, 0, 65536, byteOff);
