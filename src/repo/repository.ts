@@ -377,6 +377,20 @@ export function getRepoCache(): RepoPkg[] {
   for (const repo of cfg.repos) {
     const pkgDir = path.join(PKG_CACHE, repo.name);
     if (!fs.existsSync(pkgDir)) continue;
+
+    // Use all.json if available (single JSON.parse vs 64k)
+    const allPath = path.join(pkgDir, 'all.json');
+    if (fs.existsSync(allPath)) {
+      try {
+        const pkgs = JSON.parse(fs.readFileSync(allPath, 'utf8')) as RepoPkg[];
+        for (const p of pkgs) {
+          if (!seen.has(p.package)) { seen.add(p.package); all.push(p); }
+        }
+        continue;
+      } catch {}
+    }
+
+    // Fallback: scan JSONL chunks
     const files = fs.readdirSync(pkgDir).filter(f => f.endsWith('.jsonl')).sort();
     for (const f of files) {
       const lines = fs.readFileSync(path.join(pkgDir, f), 'utf8').trim().split('\n');
@@ -384,10 +398,7 @@ export function getRepoCache(): RepoPkg[] {
         if (!line) continue;
         try {
           const p = JSON.parse(line) as RepoPkg;
-          if (!seen.has(p.package)) {
-            seen.add(p.package);
-            all.push(p);
-          }
+          if (!seen.has(p.package)) { seen.add(p.package); all.push(p); }
         } catch {}
       }
     }
