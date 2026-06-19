@@ -9,6 +9,12 @@ import { setNoConfirm } from '../ui/prompt';
 import { t as t_ } from '../i18n';
 import * as fs from 'node:fs';
 import pkg from '../../package.json';
+
+function needRoot() {
+  if (!process.getuid || process.getuid() === 0) return;
+  console.error(t_('error_need_root'));
+  process.exit(1);
+}
 import type { InstallOptions } from '../core/options';
 
 const CACHE = '/var/cache/pacman-debian/pkg';
@@ -97,20 +103,20 @@ export async function parseArgs(args: string[]): Promise<void> {
   // Long-form operations
   if (raw === '--help' || raw === '-h') { help(); return; }
   if (raw === '--version' || raw === '-V') { console.log(t_('version_string', VERSION)); return; }
-  if (raw === '--sync') {
+  if (raw === '--sync') { needRoot();
     const asdeps = rest.includes('--asdeps');
     const targets = rest.filter(a => !a.startsWith('-'));
     if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
     await installPackages(targets, { ...opts, asdeps });
     return;
   }
-  if (raw === '--upgrade') {
+  if (raw === '--upgrade') { needRoot();
     const targets = rest.filter(a => !a.startsWith('-'));
     if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
     for (const t of targets) await installPkg(t, opts);
     return;
   }
-  if (raw === '--remove') {
+  if (raw === '--remove') { needRoot();
     const targets = rest.filter(a => !a.startsWith('-'));
     if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
     for (const n of targets) await removeByName(n, { recursive: false });
@@ -121,7 +127,7 @@ export async function parseArgs(args: string[]): Promise<void> {
     else showInfo(rest[0], false);
     return;
   }
-  if (raw === '--database') {
+  if (raw === '--database') { needRoot();
     const asdeps = rest.includes('--asdeps');
     const asexplicit = rest.includes('--asexplicit');
     const targets = rest.filter(a => !a.startsWith('-'));
@@ -177,8 +183,8 @@ export async function parseArgs(args: string[]): Promise<void> {
       return;
     }
     if (doList) { listRepoContents(rest[0]); return; }
-    if (doSingleClean) { cleanCache(false); return; }
-    if (doClean) { cleanCache(true); return; }
+    if (doSingleClean) { needRoot(); cleanCache(false); return; }
+    if (doClean) { needRoot(); cleanCache(true); return; }
     if (doDownload) {
       for (const t of rest) {
         const p = findInRepo(t);
@@ -191,6 +197,7 @@ export async function parseArgs(args: string[]): Promise<void> {
       for (const t of rest) console.log(t_('would_install', t));
       return;
     }
+    needRoot();
     if (doRefresh && doUpgrade) { await syncAndUpgrade(opts); return; }
     if (doRefresh) {
       process.stdout.write(t_('syncing_databases') + '\n');
@@ -222,8 +229,10 @@ export async function parseArgs(args: string[]): Promise<void> {
     const recursive = flags.includes('s');
     const cascade = flags.includes('c');
     const nodeps = flags.includes('d');
+    const nosave = flags.includes('n');
     const doPrint = flags.includes('p');
-    for (const n of targets) await removeByName(n, { recursive, cascade, nodeps, print: doPrint });
+    if (!doPrint) needRoot();
+    for (const n of targets) await removeByName(n, { recursive, cascade, nodeps, nosave, print: doPrint });
     return;
   }
 
