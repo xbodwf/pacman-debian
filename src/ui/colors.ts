@@ -1,9 +1,12 @@
 import chalk from 'chalk';
 
+// Colors matching official pacman:
+//   sync repos = magenta, local repos = blue, pkg names = green
+//   errors = red, warnings = yellow, versions = plain
 export const color = {
-  repo: chalk.cyan,
+  repo: chalk.magenta,
   pkg: chalk.green,
-  version: chalk.yellow,
+  local: chalk.blue,
   error: chalk.bold.red,
   warn: chalk.yellow,
   ok: chalk.green,
