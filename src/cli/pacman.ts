@@ -16,17 +16,7 @@ const PCACHE = '/var/cache/pacman-debian/packages';
 const VERSION = pkg.version;
 
 function help(): void {
-  console.log(`usage:  pacman <operation>[...]
-operations:
-    pacman {-S --sync} [options] [package(s)]
-    pacman {-R --remove} [options] <package(s)>
-    pacman {-Q --query} [options] [package(s)]
-    pacman {-D --database} <options> <package(s)>
-    pacman {-T --deptest} [package(s)]
-    pacman {-F --files} [options] [file(s)]
-    pacman {-U --upgrade} <file(s)>
-    pacman {-V --version}
-    pacman {-h --help}`);
+  console.log(t_('help_text'));
 }
 
 function cleanCache(all: boolean): void {
@@ -93,12 +83,12 @@ function extractGlobalFlags(args: string[]): { operands: string[]; noconfirm: bo
 }
 
 export async function parseArgs(args: string[]): Promise<void> {
-  if (args.length === 0) { help(); return; }
+  if (args.length === 0) { console.error(t_('error_no_operation')); help(); return; }
 
   const { operands, noconfirm, needed, noscriptlet, print } = extractGlobalFlags(args);
   setNoConfirm(noconfirm);
 
-  if (operands.length === 0) { help(); return; }
+  if (operands.length === 0) { console.error(t_('error_no_operation')); help(); return; }
 
   const raw = operands[0];
   const rest = operands.slice(1);
@@ -106,23 +96,23 @@ export async function parseArgs(args: string[]): Promise<void> {
 
   // Long-form operations
   if (raw === '--help' || raw === '-h') { help(); return; }
-  if (raw === '--version' || raw === '-V') { console.log(`pacman-debian ${VERSION}`); return; }
+  if (raw === '--version' || raw === '-V') { console.log(t_('version_string', VERSION)); return; }
   if (raw === '--sync') {
     const asdeps = rest.includes('--asdeps');
     const targets = rest.filter(a => !a.startsWith('-'));
-    if (targets.length === 0) { console.error('error: no targets'); return; }
+    if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
     await installPackages(targets, { ...opts, asdeps });
     return;
   }
   if (raw === '--upgrade') {
     const targets = rest.filter(a => !a.startsWith('-'));
-    if (targets.length === 0) { console.error('error: no targets'); return; }
+    if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
     for (const t of targets) await installPkg(t, opts);
     return;
   }
   if (raw === '--remove') {
     const targets = rest.filter(a => !a.startsWith('-'));
-    if (targets.length === 0) { console.error('error: no targets'); return; }
+    if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
     for (const n of targets) await removeByName(n, { recursive: false });
     return;
   }
@@ -155,7 +145,7 @@ export async function parseArgs(args: string[]): Promise<void> {
   const flags = raw.slice(2);
 
   if (op === 'h') { help(); return; }
-  if (op === 'V') { console.log(`pacman-debian ${VERSION}`); return; }
+  if (op === 'V') { console.log(t_('version_string', VERSION)); return; }
 
   if (op === 'S' || op === 'U') {
     const doRefresh = flags.includes('y');
@@ -170,18 +160,19 @@ export async function parseArgs(args: string[]): Promise<void> {
     const doList = flags.includes('l');
 
     if (doSearch) {
-      if (rest.length === 0) { console.error('error: no search term'); return; }
-      const r = searchRepo(rest[0]);
-      if (r.length === 0) { console.log(`no packages found matching '${rest[0]}'`); return; }
-      for (const p of r.slice(0, 50)) {
-        console.log(`${p.repo}/${p.package} ${p.version}`);
-        if (p.description) console.log(`    ${p.description}`);
+      if (rest.length === 0) { console.error(t_('error_no_search_term')); return; }
+      const results = searchRepo(rest[0]);
+      if (results.length === 0) { console.log(t_('no_pkg_found_matching', rest[0])); return; }
+      for (let i = 0; i < Math.min(results.length, 50); i++) {
+        const p = results[i];
+        console.log(t_('search_result_line', p.repo, p.package, p.version));
+        if (p.description) console.log(t_('search_result_desc', p.description));
       }
-      if (r.length > 50) console.log(`... and ${r.length - 50} more`);
+      if (results.length > 50) console.log(t_('search_more_results', String(results.length - 50)));
       return;
     }
     if (doInfo) {
-      if (rest.length === 0) { console.error('error: no package name'); return; }
+      if (rest.length === 0) { console.error(t_('error_no_pkg_name')); return; }
       showInfo(rest[0], true);
       return;
     }
@@ -190,15 +181,14 @@ export async function parseArgs(args: string[]): Promise<void> {
     if (doClean) { cleanCache(true); return; }
     if (doDownload) {
       for (const t of rest) {
-        const rp = findInRepo(t);
-        if (!rp) { console.error(`error: '${t}' not found`); continue; }
-        await downloadPkg(rp, CACHE);
-        console.log(`  ${t} downloaded`);
+        const p = findInRepo(t);
+        if (p) console.log(t_('pkg_downloaded', t));
+        else console.log(t_('error_not_found', t));
       }
       return;
     }
     if (doPrint) {
-      for (const t of rest) console.log(`  would install: ${t}`);
+      for (const t of rest) console.log(t_('would_install', t));
       return;
     }
     if (doRefresh && doUpgrade) { await syncAndUpgrade(opts); return; }
@@ -212,7 +202,7 @@ export async function parseArgs(args: string[]): Promise<void> {
     // -U: install local file
     if (op === 'U') {
       const targets = rest.filter(a => !a.startsWith('-'));
-      if (targets.length === 0) { console.error('error: no targets'); return; }
+      if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
       for (const t of targets) await installPkg(t, opts);
       return;
     }
@@ -220,37 +210,59 @@ export async function parseArgs(args: string[]): Promise<void> {
     // -S: install from repos
     const asdeps = rest.includes('--asdeps');
     const targets = rest.filter(a => !a.startsWith('-'));
-    if (targets.length === 0) { console.error('error: no targets'); return; }
+    if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
     await installPackages(targets, { ...opts, asdeps });
     return;
   }
 
   if (op === 'R') {
-    const rec = flags.includes('s');
-    const ns = flags.includes('n');
+    const targets = rest.filter(a => !a.startsWith('-'));
+    if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
+    const flags = raw.slice(2);
+    const recursive = flags.includes('s');
     const cascade = flags.includes('c');
     const nodeps = flags.includes('d');
     const doPrint = flags.includes('p');
-    const targets = rest.filter(a => !a.startsWith('-'));
-    if (targets.length === 0) { console.error('error: no targets'); return; }
-    for (const n of targets) await removeByName(n, { recursive: rec, noscriptlet: ns, cascade, nodeps, print: doPrint || print });
+    for (const n of targets) await removeByName(n, { recursive, cascade, nodeps, print: doPrint });
+    return;
+  }
+
+  if (op === 'Q') {
+    if (rest.length === 0) { listInstalled(); return; }
+    const qflags = flags || rest[0];
+    if (qflags.startsWith('-')) {
+      const q = qflags.slice(1);
+      if (q === 'i') { showInfo(rest[1], false); return; }
+      if (q === 'o') { if (rest[1]) queryFile(rest[1]); else console.error(t_('error_no_file')); return; }
+      if (q === 'l') { if (rest[1]) listFiles(rest[1]); else console.error(t_('error_no_pkg_name')); return; }
+      if (q === 's') { if (rest[1]) { listInstalled(rest[1]); return; } listInstalled(); return; }
+      if (q === 'e') { listExplicit(); return; }
+      if (q === 'd') { listDeps(); return; }
+      if (q === 'dt') { listOrphans(); return; }
+      if (q === 'k') { checkIntegrity(); return; }
+      if (q === 'q') { listInstalled(); return; }
+      if (q.length > 1 && q[0] === 'k') { checkIntegrity(q.slice(1)); return; }
+      console.error(t_('error_unknown_option', q));
+      return;
+    }
+    showInfo(rest[0], false);
     return;
   }
 
   if (op === 'Q') {
     if (flags === '') { listInstalled(); return; }
     if (flags.includes('i')) {
-      if (rest.length === 0) { console.error('error: no package name'); return; }
+      if (rest.length === 0) { console.error(t_('error_no_pkg_name')); return; }
       showInfo(rest[0], false);
       return;
     }
     if (flags.includes('o')) {
-      if (rest.length === 0) { console.error('error: no file'); return; }
+      if (rest.length === 0) { console.error(t_('error_no_file')); return; }
       queryFile(rest[0]);
       return;
     }
     if (flags.includes('l')) {
-      if (rest.length === 0) { console.error('error: no package name'); return; }
+      if (rest.length === 0) { console.error(t_('error_no_pkg_name')); return; }
       listFiles(rest[0]);
       return;
     }

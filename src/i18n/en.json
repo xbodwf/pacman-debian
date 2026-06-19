@@ -6,6 +6,7 @@
   "repo_synced_count": "{0} packages synced",
   "repo_sync_failed": "sync failed",
   "warn_repo_zero_packages": "WARNING: {0} returned 0 packages (check pacman.conf architecture setting)",
+  "error_no_operation": "error: no operation specified (use -h for help)",
   "error_need_root": "error: you must be root to perform this operation",
   "error_db_not_synced": "error: database not synced (run pacman -Sy)",
   "error_not_found": "error: '{0}' not found",
@@ -45,7 +46,7 @@
   "cache_cleaned_pkg": ":: package cache cleaned",
   "file_db_not_maintained": ":: file database not maintained",
   "version_string": "pacman-debian {0}",
-  "help_text": "usage: pacman <operation> [...]\noperations:\n    pacman {-S --sync}      [options] [package]\n    pacman {-R --remove}    [options] <package>\n    pacman {-Q --query}     [options] [package]\n    pacman {-U --upgrade}   [options] <file>\n    pacman {-D --database}  [options] <package>\n    pacman {-T --deptest}   [options] [package]\n    pacman {-F --files}     [options] [file]\n    pacman {-V --version}   show version\n\nuse 'pacman --help' for more details",
+  "help_text": "usage:  pacman <operation>[...]\noperations:\n    pacman {-S --sync} [options] [package(s)]\n    pacman {-R --remove} [options] <package(s)>\n    pacman {-Q --query} [options] [package(s)]\n    pacman {-D --database} <options> <package(s)>\n    pacman {-T --deptest} [package(s)]\n    pacman {-F --files} [options] [file(s)]\n    pacman {-U --upgrade} <file(s)>\n    pacman {-V --version}\n    pacman {-h --help}",
 
   "warn_failed_dpkg_status": "WARNING: failed to write dpkg status: {0}",
   "warn_not_found_in_repo": "WARNING: {0} not found in repo",

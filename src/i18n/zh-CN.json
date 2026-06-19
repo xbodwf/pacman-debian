@@ -6,6 +6,7 @@
   "repo_synced_count": "{0} 个软件包已同步",
   "repo_sync_failed": "同步失败",
   "warn_repo_zero_packages": "WARNING: {0} 返回 0 个软件包（请检查 pacman.conf 中的架构设置）",
+  "error_no_operation": "错误：没有指定操作 (使用 -h 获取帮助)",
   "error_need_root": "错误：需要 root 权限才能执行此操作",
   "error_db_not_synced": "错误：数据库未同步（请运行 sudo pacman -Sy）",
   "error_not_found": "错误：未找到 '{0}'",
@@ -45,7 +46,7 @@
   "cache_cleaned_pkg": ":: 软件包缓存已清理",
   "file_db_not_maintained": ":: 文件数据库未维护",
   "version_string": "pacman-debian {0}",
-  "help_text": "用法：pacman <操作> [...]\n操作：\n    pacman {-S --sync}      [选项] [软件包]\n    pacman {-R --remove}    [选项] <软件包>\n    pacman {-Q --query}     [选项] [软件包]\n    pacman {-U --upgrade}   [选项] <文件>\n    pacman {-D --database}  [选项] <软件包>\n    pacman {-T --deptest}   [选项] [软件包]\n    pacman {-F --files}     [选项] [文件]\n    pacman {-V --version}   显示版本\n\n使用 'pacman --help' 获取更多信息",
+  "help_text": "用法：  pacman <操作>[...]\n操作：\n    pacman {-S --sync} [选项] [软件包]\n    pacman {-R --remove} [选项] <软件包>\n    pacman {-Q --query} [选项] [软件包]\n    pacman {-D --database} <选项> <软件包>\n    pacman {-T --deptest} [软件包]\n    pacman {-F --files} [选项] [文件]\n    pacman {-U --upgrade} <文件>\n    pacman {-V --version}\n    pacman {-h --help}",
 
   "warn_failed_dpkg_status": "警告：写入 dpkg 状态失败：{0}",
   "warn_not_found_in_repo": "警告：{0} 在仓库中未找到",
