@@ -330,9 +330,11 @@ export async function syncRepos(force: boolean = false): Promise<void> {
         // Build index with byte offsets (computed from previous chunk lengths)
         let offset = 0;
         for (let pi = 0; pi < chunk.length; pi++) {
-          const json = JSON.stringify(chunk[pi]);
-          idxLines.push(`${chunk[pi].package}:${fname}:${offset}`);
-          offset += Buffer.byteLength(json, 'utf8') + 1; // +1 for \n
+          const p = chunk[pi];
+          const json = JSON.stringify(p);
+          const desc = p.description || '';
+          idxLines.push(`${p.package} ${desc}\t${fname}\t${offset}`);
+          offset += Buffer.byteLength(json, 'utf8') + 1;
         }
       }
       await Promise.all(writeTasks);
@@ -401,6 +403,7 @@ export function searchRepo(query: string): RepoPkg[] {
   const lq = query.toLowerCase();
   const results: RepoPkg[] = [];
   const cfg = loadConfig();
+  const seen = new Set<string>();
 
   for (const repo of cfg.repos) {
     const pkgDir = path.join(PKG_CACHE, repo.name);
@@ -408,27 +411,30 @@ export function searchRepo(query: string): RepoPkg[] {
     if (!fs.existsSync(idxPath)) continue;
 
     const idx = fs.readFileSync(idxPath, 'utf8').split('\n');
-    const nameMatchIdx: number[] = [];
 
-    // Phase 1: scan index for name matches (fast, 1.4MB total)
     for (let i = 0; i < idx.length; i++) {
-      if (!idx[i]) continue;
-      // idx line: pkgname:chunkFile:byteOffset
-      const colon = idx[i].indexOf(':');
-      if (colon < 0) continue;
-      const pname = idx[i].slice(0, colon);
-      if (pname.toLowerCase().includes(lq)) nameMatchIdx.push(i);
-    }
+      const line = idx[i];
+      if (!line) continue;
 
-    if (nameMatchIdx.length === 0) continue;
+      // idx line: pkgname description\tfilename\toffset
+      if (!line.toLowerCase().includes(lq)) continue;
 
-    // Phase 2: read only matched packages via byte-offset seek
-    for (const i of nameMatchIdx) {
-      const parts = idx[i].split(':');
-      const chunkFile = parts[1];
-      const byteOff = parseInt(parts.slice(2).join(':'), 10);
+      // Check for dedup before reading JSON
+      const tab1 = line.indexOf('\t');
+      if (tab1 < 0) continue;
+      const pname = line.slice(0, tab1).split(' ')[0];
+      if (seen.has(pname)) continue;
+      seen.add(pname);
+
+      // Last tab-separated field = offset
+      const lastTab = line.lastIndexOf('\t');
+      const byteOff = parseInt(line.slice(lastTab + 1), 10);
+      const lineBeforeOff = line.slice(0, lastTab);
+      const secondLastTab = lineBeforeOff.lastIndexOf('\t');
+      const chunkFile = lineBeforeOff.slice(secondLastTab + 1);
       if (!chunkFile || isNaN(byteOff)) continue;
 
+      // Seek and read JSON line
       const fd = fs.openSync(path.join(pkgDir, chunkFile), 'r');
       const buf = Buffer.alloc(65536);
       const bytes = fs.readSync(fd, buf, 0, 65536, byteOff);
@@ -442,14 +448,7 @@ export function searchRepo(query: string): RepoPkg[] {
     }
   }
 
-  // Phase 3: deduplicate and filter by description too
-  const seen = new Set<string>();
-  return results.filter(p => {
-    if (seen.has(p.package)) return false;
-    seen.add(p.package);
-    if (p.description && p.description.toLowerCase().includes(lq)) return true;
-    return p.package.toLowerCase().includes(lq);
-  });
+  return results;
 }
 
 export function findInRepo(pkgName: string): RepoPkg | undefined {
@@ -462,19 +461,25 @@ export function findInRepo(pkgName: string): RepoPkg | undefined {
     if (!fs.existsSync(idxPath)) continue;
     const idx = fs.readFileSync(idxPath, 'utf8').split('\n');
 
-    // Binary search: index is sorted "pkgname:chunkFile:byteOffset"
-    const target = `${pkgName}:`;
+    // Binary search: index is sorted "pkgname desc\tchunkFile\toffset"
+    // We compare against the first space/tab-delimited field (package name)
     let lo = 0, hi = idx.length - 1;
     while (lo <= hi) {
       const mid = (lo + hi) >>> 1;
       const line = idx[mid];
       if (!line) { lo = mid + 1; continue; }
-      if (line < target) lo = mid + 1;
-      else if (line > target) hi = mid - 1;
+      // Extract package name from start of line (up to first space)
+      const space = line.indexOf(' ');
+      const pname = space > 0 ? line.slice(0, space) : line;
+      if (pkgName < pname) hi = mid - 1;
+      else if (pkgName > pname) lo = mid + 1;
       else {
-        const parts = line.split(':');
-        const chunkFile = parts[1];
-        const byteOff = parseInt(parts.slice(2).join(':'), 10);
+        // Exact match: parse tab-separated fields from end
+        const lastTab = line.lastIndexOf('\t');
+        const byteOff = parseInt(line.slice(lastTab + 1), 10);
+        const beforeOff = line.slice(0, lastTab);
+        const secondLastTab = beforeOff.lastIndexOf('\t');
+        const chunkFile = beforeOff.slice(secondLastTab + 1);
         if (!chunkFile || isNaN(byteOff)) break;
         // Seek directly to byte offset and read until newline
         const fd = fs.openSync(path.join(pkgDir, chunkFile), 'r');
