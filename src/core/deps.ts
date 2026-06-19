@@ -124,14 +124,45 @@ function findProvider(name: string, state: DepState): RepoPkg | undefined {
   const direct = findInRepo(name);
   if (direct) return direct;
 
-  if (!state.repoCache) state.repoCache = getRepoCache();
-  return state.repoCache.find(p => {
-    const provides = p.provides || '';
-    return provides.split(',').some(pr => {
-      const pn = pr.trim().split(/[<>=]/)[0].trim();
-      return pn === name;
-    });
-  });
+  // Search provides via packages.idx (index has provides field)
+  const { loadConfig } = require('../repo/config');
+  const { readPkgAt } = require('../repo/repository');
+  const fs = require('node:fs');
+  const path = require('node:path');
+
+  const cfg = loadConfig();
+  const PKG_CACHE = '/var/cache/pacman-debian/packages';
+  for (const repo of cfg.repos) {
+    const pkgDir = path.join(PKG_CACHE, repo.name);
+    const idxPath = path.join(pkgDir, 'packages.idx');
+    if (!fs.existsSync(idxPath)) continue;
+    const idx = fs.readFileSync(idxPath, 'utf8').split('\n');
+    for (const line of idx) {
+      if (!line) continue;
+      // idx: pkgname desc\tprovides\tchunkFile\toffset
+      const firstTab = line.indexOf('\t');
+      if (firstTab < 0) continue;
+      const rest = line.slice(firstTab + 1);
+      const secondTab = rest.indexOf('\t');
+      if (secondTab < 0) continue;
+      const provides = rest.slice(0, secondTab);
+      if (!provides) continue;
+      if (provides.split(',').some((pr: string) => {
+        const pn = pr.trim().split(/[<>=]/)[0].trim();
+        return pn === name;
+      })) {
+        const lastTab = line.lastIndexOf('\t');
+        const byteOff = parseInt(line.slice(lastTab + 1), 10);
+        const beforeOff = line.slice(0, lastTab);
+        const thirdLastTab = beforeOff.lastIndexOf('\t');
+        const chunkFile = beforeOff.slice(thirdLastTab + 1);
+        if (chunkFile && !isNaN(byteOff)) {
+          return readPkgAt(pkgDir, chunkFile, byteOff);
+        }
+      }
+    }
+  }
+  return undefined;
 }
 
 /* ---- Full dependency resolution ---- */

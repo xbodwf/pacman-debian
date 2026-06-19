@@ -333,7 +333,8 @@ export async function syncRepos(force: boolean = false): Promise<void> {
           const p = chunk[pi];
           const json = JSON.stringify(p);
           const desc = p.description || '';
-          idxLines.push(`${p.package} ${desc}\t${fname}\t${offset}`);
+          const provides = (p.provides || '').replace(/\t/g, ' ').replace(/\n/g, ' ');
+          idxLines.push(`${p.package} ${desc}\t${provides}\t${fname}\t${offset}`);
           offset += Buffer.byteLength(json, 'utf8') + 1;
         }
       }
@@ -364,6 +365,17 @@ export async function syncRepos(force: boolean = false): Promise<void> {
   invalidateCache();
 }
 
+/** Read a pkg from JSONL by byte offset (shared helper) */
+function readPkgAt(pkgDir: string, chunkFile: string, byteOff: number): RepoPkg | undefined {
+  const fd = fs.openSync(path.join(pkgDir, chunkFile), 'r');
+  const buf = Buffer.alloc(65536);
+  const bytes = fs.readSync(fd, buf, 0, 65536, byteOff);
+  fs.closeSync(fd);
+  const end = buf.indexOf(10);
+  const json = end >= 0 ? buf.toString('utf8', 0, end) : buf.toString('utf8', 0, bytes);
+  try { return JSON.parse(json) as RepoPkg; } catch { return undefined; }
+}
+
 // ---- Cache ----
 let _cache: RepoPkg[] | null = null;
 
@@ -377,16 +389,23 @@ export function getRepoCache(): RepoPkg[] {
 
   for (const repo of cfg.repos) {
     const pkgDir = path.join(PKG_CACHE, repo.name);
-    if (!fs.existsSync(pkgDir)) continue;
-    const files = fs.readdirSync(pkgDir).filter(f => f.endsWith('.jsonl')).sort();
-    for (const f of files) {
-      for (const line of fs.readFileSync(path.join(pkgDir, f), 'utf8').trim().split('\n')) {
-        if (!line) continue;
-        try {
-          const p = JSON.parse(line) as RepoPkg;
-          if (!seen.has(p.package)) { seen.add(p.package); all.push(p); }
-        } catch {}
-      }
+    const idxPath = path.join(pkgDir, 'packages.idx');
+    if (!fs.existsSync(idxPath)) continue;
+
+    const idx = fs.readFileSync(idxPath, 'utf8').split('\n');
+    for (const line of idx) {
+      if (!line) continue;
+      // idx: pkgname desc\tprovides\tchunkFile\toffset
+      const lastTab = line.lastIndexOf('\t');
+      const byteOff = parseInt(line.slice(lastTab + 1), 10);
+      if (isNaN(byteOff)) continue;
+      const beforeOff = line.slice(0, lastTab);
+      const secondLastTab = beforeOff.lastIndexOf('\t');
+      const chunkFile = beforeOff.slice(secondLastTab + 1);
+      if (!chunkFile) continue;
+
+      const p = readPkgAt(pkgDir, chunkFile, byteOff);
+      if (p && !seen.has(p.package)) { seen.add(p.package); all.push(p); }
     }
   }
 
@@ -413,35 +432,24 @@ export function searchRepo(query: string): RepoPkg[] {
       const line = idx[i];
       if (!line) continue;
 
-      // idx line: pkgname description\tfilename\toffset
+      // idx line: pkgname desc\tprovides\tchunkFile\toffset
       if (!line.toLowerCase().includes(lq)) continue;
 
-      // Check for dedup before reading JSON
       const tab1 = line.indexOf('\t');
       if (tab1 < 0) continue;
       const pname = line.slice(0, tab1).split(' ')[0];
       if (seen.has(pname)) continue;
       seen.add(pname);
 
-      // Last tab-separated field = offset
       const lastTab = line.lastIndexOf('\t');
       const byteOff = parseInt(line.slice(lastTab + 1), 10);
-      const lineBeforeOff = line.slice(0, lastTab);
-      const secondLastTab = lineBeforeOff.lastIndexOf('\t');
-      const chunkFile = lineBeforeOff.slice(secondLastTab + 1);
+      const beforeOff = line.slice(0, lastTab);
+      const secondLastTab = beforeOff.lastIndexOf('\t');
+      const chunkFile = beforeOff.slice(secondLastTab + 1);
       if (!chunkFile || isNaN(byteOff)) continue;
 
-      // Seek and read JSON line
-      const fd = fs.openSync(path.join(pkgDir, chunkFile), 'r');
-      const buf = Buffer.alloc(65536);
-      const bytes = fs.readSync(fd, buf, 0, 65536, byteOff);
-      fs.closeSync(fd);
-      const end = buf.indexOf(10);
-      const json = end >= 0 ? buf.toString('utf8', 0, end) : buf.toString('utf8', 0, bytes);
-      try {
-        const p = JSON.parse(json) as RepoPkg;
-        results.push(p);
-      } catch {}
+      const p = readPkgAt(pkgDir, chunkFile, byteOff);
+      if (p) results.push(p);
     }
   }
 
@@ -471,21 +479,13 @@ export function findInRepo(pkgName: string): RepoPkg | undefined {
       if (pkgName < pname) hi = mid - 1;
       else if (pkgName > pname) lo = mid + 1;
       else {
-        // Exact match: parse tab-separated fields from end
         const lastTab = line.lastIndexOf('\t');
         const byteOff = parseInt(line.slice(lastTab + 1), 10);
         const beforeOff = line.slice(0, lastTab);
         const secondLastTab = beforeOff.lastIndexOf('\t');
         const chunkFile = beforeOff.slice(secondLastTab + 1);
         if (!chunkFile || isNaN(byteOff)) break;
-        // Seek directly to byte offset and read until newline
-        const fd = fs.openSync(path.join(pkgDir, chunkFile), 'r');
-        const buf = Buffer.alloc(65536);
-        const bytes = fs.readSync(fd, buf, 0, 65536, byteOff);
-        fs.closeSync(fd);
-        const end = buf.indexOf(10, 0); // first \n
-        const json = end >= 0 ? buf.toString('utf8', 0, end) : buf.toString('utf8', 0, bytes);
-        try { return JSON.parse(json) as RepoPkg; } catch { return undefined; }
+        return readPkgAt(pkgDir, chunkFile, byteOff);
       }
     }
   }
