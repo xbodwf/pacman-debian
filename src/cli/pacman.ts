@@ -28,7 +28,7 @@ function help(): void {
 function cleanCache(all: boolean): void {
   if (fs.existsSync(CACHE)) { fs.rmSync(CACHE, { recursive: true }); fs.mkdirSync(CACHE, { recursive: true }); }
   if (all && fs.existsSync(PCACHE)) { fs.rmSync(PCACHE, { recursive: true }); }
-  console.log(all ? ':: cache cleaned' : ':: package cache cleaned');
+  console.log(all ? t_('cache_cleaned_all') : t_('cache_cleaned_pkg'));
 }
 
 function listRepoContents(repoName?: string): void {
@@ -136,7 +136,7 @@ export async function parseArgs(args: string[]): Promise<void> {
     return;
   }
   if (raw === '--files') {
-    if (rest[0] === '-y' || rest[0] === 'y') { console.log(':: file database not maintained'); return; }
+    if (rest[0] === '-y' || rest[0] === 'y') { console.log(t_('file_db_not_maintained')); return; }
     if (rest.length > 0) queryFile(rest[0]);
     return;
   }
@@ -146,7 +146,7 @@ export async function parseArgs(args: string[]): Promise<void> {
   }
 
   // Short-form
-  if (!raw.startsWith('-')) { console.error(`error: unknown operation '${raw}'`); process.exit(1); }
+  if (!raw.startsWith('-')) { console.error(t_('error_unknown_operation', raw)); process.exit(1); }
   const op = raw[1];
   const flags = raw.slice(2);
 
@@ -298,11 +298,11 @@ export async function parseArgs(args: string[]): Promise<void> {
   if (op === 'T') { checkDeps(rest); return; }
 
   if (op === 'F') {
-    if (flags.includes('y')) { console.log(':: file database not maintained'); return; }
+    if (flags.includes('y')) { console.log(t_('file_db_not_maintained')); return; }
     if (rest.length > 0) queryFile(rest[0]);
     return;
   }
 
-  console.error(`error: unknown operation '-${op}'`);
+  console.error(t_('error_unknown_operation_short', op));
   process.exit(1);
 }

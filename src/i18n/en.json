@@ -74,6 +74,7 @@
   "integrity_warning": "{0}: WARNING: {1} files missing",
   "integrity_warning_global": "{0}: WARNING: {1} files missing",
 
+  "no_pkgs_installed": "no packages installed",
   "prompt_yes": "Y",
   "prompt_no": "n",
   "prompt_yes_default": "[Y/n]",

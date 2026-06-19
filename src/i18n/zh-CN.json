@@ -74,6 +74,7 @@
   "integrity_warning": "{0}：警告：{1} 个文件缺失",
   "integrity_warning_global": "{0}：警告：{1} 个文件缺失",
 
+  "no_pkgs_installed": "没有已安装的软件包",
   "prompt_yes": "是",
   "prompt_no": "否",
   "prompt_yes_default": "[Y/n]",

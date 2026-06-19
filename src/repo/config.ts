@@ -64,12 +64,16 @@ export function loadConfig(): Config {
       continue;
     }
     const kv = parseKeyValue(t);
-    if (!kv) continue;
+    if (!kv) {
+      // Bare boolean flag (no = sign), e.g. "Color"
+      const flag = t.trim().toLowerCase();
+      if (flag === 'color' && (inOptions || !cur)) cfg.color = true;
+      continue;
+    }
     const [k, v] = kv;
 
     if (inOptions || !cur) {
       if (k === 'architecture') cfg.architecture = v;
-      else if (k === 'color') cfg.color = true;
       continue;
     }
 
