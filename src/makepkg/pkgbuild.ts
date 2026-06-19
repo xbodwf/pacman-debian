@@ -8,6 +8,7 @@ export interface PkgbuildInfo {
   pkgver: string;
   pkgrel: string;
   epoch?: string;
+  pkgdesc: string;
   arch: string[];
   url?: string;
   license: string[];
@@ -76,6 +77,7 @@ export function parsePkgbuild(pkgbuildPath: string, ignoreArch = false): Pkgbuil
     pkgver: bashGet('pkgver', absPath),
     pkgrel: bashGet('pkgrel', absPath),
     epoch: bashGet('epoch', absPath) || undefined,
+    pkgdesc: bashGet('pkgdesc', absPath) || '',
     arch,
     url: bashGet('url', absPath) || undefined,
     license: bashGetArray('license', absPath),
@@ -121,6 +123,7 @@ export function printSrcinfo(info: PkgbuildInfo): string {
     `pkgrel = ${info.pkgrel}`,
   ];
   if (info.epoch) lines.push(`epoch = ${info.epoch}`);
+  lines.push(`pkgdesc = ${info.pkgdesc}`);
   for (const a of info.arch) lines.push(`arch = ${a}`);
   if (info.url) lines.push(`url = ${info.url}`);
   for (const l of info.license) lines.push(`license = ${l}`);
