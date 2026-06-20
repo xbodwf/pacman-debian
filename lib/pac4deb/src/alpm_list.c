@@ -84,6 +84,15 @@ void *alpm_list_find(const alpm_list_t *haystack, const void *needle,
 	return NULL;
 }
 
+void *alpm_list_find_str(const alpm_list_t *haystack, const char *needle) {
+	while (haystack) {
+		if (haystack->data && strcmp((const char *)haystack->data, needle) == 0)
+			return haystack->data;
+		haystack = haystack->next;
+	}
+	return NULL;
+}
+
 alpm_list_t *alpm_list_remove(alpm_list_t *list, const void *needle,
 		int (*fn)(const void *, const void *), void **data) {
 	alpm_list_t *it = list;

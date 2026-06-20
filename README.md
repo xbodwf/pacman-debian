@@ -123,6 +123,7 @@ Uses a directory-per-package format matching Arch Linux's local DB:
 
 ```
 /var/lib/pacman-debian/local/
+├── index.json       # name → dir mapping (base64 encoded paths)
 ├── by-name/
 │   ├── fastfetch -> ../fastfetch-2.64.2-2/
 │   └── ...
@@ -131,6 +132,10 @@ Uses a directory-per-package format matching Arch Linux's local DB:
 │   └── files         # File manifest
 └── ...
 ```
+
+A flat `index.json` file maps package names to their directories (one `name:base64path`
+per line). This is the primary lookup path for removals and queries, and is
+automatically rebuilt from the filesystem if missing or corrupted.
 
 ### dpkg compatibility
 
@@ -188,6 +193,18 @@ modification. It reads:
 - Sync databases (`/var/cache/pacman-debian/packages/*/` — JSONL chunks)
 
 Over 200 stubs are provided for rarely-used functions.
+
+Key implementation details:
+
+- **packages.idx binary search (C)**: `alpm_db_get_pkg` and `alpm_find_dbs_satisfier`
+  use binary search on the sorted index, then read a single JSONL line by byte
+  offset — no full JSONL loading.
+- **Auto-register sync DBs**: `ensure_syncdbs` scans `/var/cache/pacman-debian/packages/`
+  on first `alpm_get_syncdbs`, registering all available repos lazily.
+- **Package DB pointer**: `pkg_internal.db` field tracks owning database;
+  `alpm_pkg_get_db` returns it, preventing `DB().Name()` nil dereference.
+- **idx-based search**: `alpm_db_search` scans index lines for pattern matching
+  instead of loading all packages. ~1.5s for -Ss with 6 repos / 15k packages.
 
 ## makepkg (`src/makepkg/`)
 
@@ -323,8 +340,11 @@ The dependency resolver (`src/core/deps.ts`) handles:
 - Conflict detection across installed and to-be-installed packages
 - System package protection (glibc, libc6, etc.)
 
-Version comparison delegates to `dpkg --compare-versions` with numeric/string
-fallback.
+- File validation: installed packages with no real files on disk (empty
+  directories only) are considered NOT installed, forcing re-download.
+- Explicit targets always have their dependencies processed even if the
+  target itself is already installed.
+- Queue uses `shift()` to pop processed items, preventing memory accumulation.
 
 ## Architecture
 

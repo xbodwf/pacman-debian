@@ -1,8 +1,13 @@
 /* Hand-written stubs for libalpm functions not in libalpm.c */
 #include "../include/alpm.h"
 #include "../include/alpm_list.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 /* Option setters/getters not implemented */
 int alpm_option_set_usesyslog(alpm_handle_t *h, int v) { (void)h; (void)v; return 0; }
@@ -87,9 +92,13 @@ int alpm_option_match_noextract(alpm_handle_t *h, const char *f) { (void)h; (voi
 
 /* Database operations */
 int alpm_db_update(alpm_handle_t *h, void *dbs, int force) { (void)h; (void)dbs; (void)force; return 0; }
-void *alpm_db_search(alpm_db_t *db, void *needles) { (void)db; (void)needles; return NULL; }
 int alpm_db_get_valid(alpm_db_t *db) { (void)db; return 1; }
-const char *alpm_db_get_name(alpm_db_t *db) { (void)db; return "local"; }
+const char *alpm_db_get_name(alpm_db_t *db) {
+	// treename is the first field of the internal struct
+	if (!db) return NULL;
+	struct __alpm_db_t { char *treename; void *pkgs; int is_local; };
+	return ((struct __alpm_db_t *)db)->treename;
+}
 void *alpm_db_get_groupcache(alpm_db_t *db) { (void)db; return NULL; }
 void *alpm_db_get_group(alpm_db_t *db, const char *n) { (void)db; (void)n; return NULL; }
 void *alpm_db_get_servers(alpm_db_t *db) { (void)db; return NULL; }
@@ -123,21 +132,173 @@ alpm_pkg_t *alpm_find_satisfier(alpm_list_t *pkgs, const char *dep) {
 	alpm_list_t *it;
 	for (it = pkgs; it; it = it->next) {
 		alpm_pkg_t *p = (alpm_pkg_t *)it->data;
-		if (p && strcmp(alpm_pkg_get_name(p), depname) == 0) return p;
+		if (!p) continue;
+		if (strcmp(alpm_pkg_get_name(p), depname) == 0) return p;
+		extern int alpm_pkg_has_provide(alpm_pkg_t*, const char*);
+		if (alpm_pkg_has_provide(p, depname)) return p;
 	}
 	return NULL;
 }
+#define PKG_CACHE "/var/cache/pacman-debian/packages"
+
+/* Forward declarations from libalpm.c */
+extern alpm_list_t *load_jsonl_mem(const char *json_str);
+
+/* Read a single package from JSONL by file offset */
+static alpm_pkg_t *read_pkg_at(const char *pkgdir, const char *chunkfile, int offset) {
+	char path[4096];
+	snprintf(path, sizeof(path), "%s/%s", pkgdir, chunkfile);
+	int fd = open(path, O_RDONLY);
+	if (fd < 0) return NULL;
+	/* Read up to 64KB from offset */
+	char buf[65536];
+	int n = pread(fd, buf, sizeof(buf) - 1, offset);
+	close(fd);
+	if (n <= 0) return NULL;
+	buf[n] = 0;
+	/* Find newline to get a complete JSON line */
+	char *nl = strchr(buf, '\n');
+	if (nl) *nl = 0;
+	if (buf[0] != '{') return NULL;
+	alpm_list_t *pkgs = load_jsonl_mem(buf);
+	if (!pkgs) return NULL;
+	alpm_pkg_t *result = (alpm_pkg_t *)pkgs->data;
+	free(pkgs);
+	return result;
+}
+
+/* Find a package by exact name in a packages.idx file using binary search */
+static alpm_pkg_t *find_in_idx(const char *idxpath, const char *pkgname) {
+	/* Read the idx file */
+	int fd = open(idxpath, O_RDONLY);
+	if (fd < 0) return NULL;
+	struct stat st;
+	if (fstat(fd, &st) < 0) { close(fd); return NULL; }
+	char *buf = malloc(st.st_size + 1);
+	if (!buf) { close(fd); return NULL; }
+	int n = read(fd, buf, st.st_size);
+	close(fd);
+	if (n <= 0) { free(buf); return NULL; }
+	buf[n] = 0;
+
+	/* Split into lines */
+	char **lines = NULL;
+	int nlines = 0;
+	char *line = buf;
+	while (line && *line) {
+		char *nl = strchr(line, '\n');
+		if (nl) *nl = 0;
+		if (*line) {
+			lines = realloc(lines, (nlines + 1) * sizeof(char*));
+			lines[nlines++] = line;
+		}
+		line = nl ? nl + 1 : NULL;
+	}
+
+	/* Binary search */
+	int lo = 0, hi = nlines - 1;
+	alpm_pkg_t *result = NULL;
+	while (lo <= hi) {
+		int mid = (lo + hi) / 2;
+		/* Get package name (first token before space) */
+		char *ln = lines[mid];
+		int name_len = 0;
+		while (ln[name_len] && ln[name_len] != ' ') name_len++;
+		int cmp = strncmp(pkgname, ln, name_len);
+		if (cmp == 0 && name_len == (int)strlen(pkgname)) {
+			/* Found! Parse idx line format: name desc\t[provides]\tchunkfile\toffset */
+			/* Find last two tabs to get chunkfile and offset */
+			char *p = ln + strlen(ln);
+			/* Find offset (after last tab) */
+			char *last_tab = NULL, *second_last_tab = NULL;
+			int tab_count = 0;
+			for (char *q = ln; *q; q++) {
+				if (*q == '\t') {
+					second_last_tab = last_tab;
+					last_tab = q;
+					tab_count++;
+				}
+			}
+			if (tab_count >= 2 && last_tab && second_last_tab) {
+				int offset = atoi(last_tab + 1);
+				*last_tab = 0;
+				char *chunkfile = second_last_tab + 1;
+				/* Get pkgdir from idxpath: strip "/packages.idx" */
+				int plen = strlen(idxpath) - 12; /* len of "/packages.idx" */
+				char pkgdir[4096];
+				strncpy(pkgdir, idxpath, plen);
+				pkgdir[plen] = 0;
+				result = read_pkg_at(pkgdir, chunkfile, offset);
+			}
+			break;
+		} else if (cmp < 0 || (cmp == 0 && name_len < (int)strlen(pkgname))) {
+			hi = mid - 1;
+		} else {
+			lo = mid + 1;
+		}
+	}
+
+	free(lines);
+	free(buf);
+	return result;
+}
+
+/* Dep name: strip version constraints */
+static void dep_name(const char *dep, char *out, int outlen) {
+	int i = 0;
+	while (dep[i] && dep[i] != '<' && dep[i] != '>' && dep[i] != '=' && i < outlen - 1) {
+		out[i] = dep[i]; i++;
+	}
+	out[i] = 0;
+}
+
 alpm_pkg_t *alpm_find_dbs_satisfier(alpm_handle_t *h, alpm_list_t *dbs, const char *dep) {
 	(void)h;
-	if (!dbs || !dep) return NULL;
-	alpm_list_t *it;
-	for (it = dbs; it; it = it->next) {
-		alpm_db_t *db = (alpm_db_t *)it->data;
-		if (!db) continue;
-		alpm_list_t *pkgs = alpm_db_get_pkgcache(db);
-		alpm_pkg_t *found = alpm_find_satisfier(pkgs, dep);
-		if (found) return found;
+	if (!dep) return NULL;
+	char depname[256];
+	dep_name(dep, depname, sizeof(depname));
+
+	/* Search registered databases using fast idx binary search */
+	if (dbs) {
+		alpm_list_t *it;
+		for (it = dbs; it; it = it->next) {
+			alpm_db_t *db = (alpm_db_t *)it->data;
+			if (!db) continue;
+			/* Get treename from db */
+			extern const char *alpm_db_get_name(alpm_db_t *db);
+			const char *name = alpm_db_get_name(db);
+			if (!name) continue;
+			char idxpath[4096];
+			snprintf(idxpath, sizeof(idxpath), "%s/%s/packages.idx", PKG_CACHE, name);
+			struct stat st;
+			if (stat(idxpath, &st) != 0) continue;
+			alpm_pkg_t *found = find_in_idx(idxpath, depname);
+			if (found) {
+				extern void alpm_pkg_set_db(alpm_pkg_t *, void *);
+				alpm_pkg_set_db(found, db);
+				return found;
+			}
+		}
+		return NULL;
 	}
+
+	/* Fallback: search all packages.idx files directly */
+	DIR *dir = opendir(PKG_CACHE);
+	if (!dir) return NULL;
+	struct dirent *e;
+	while ((e = readdir(dir)) != NULL) {
+		if (e->d_name[0] == '.') continue;
+		char idxpath[4096];
+		snprintf(idxpath, sizeof(idxpath), "%s/%s/packages.idx", PKG_CACHE, e->d_name);
+		struct stat st;
+		if (stat(idxpath, &st) != 0) continue;
+		alpm_pkg_t *found = find_in_idx(idxpath, depname);
+		if (found) {
+			closedir(dir);
+			return found;
+		}
+	}
+	closedir(dir);
 	return NULL;
 }
 int alpm_checkconflicts(alpm_handle_t *h, void *pkglist) { (void)h; (void)pkglist; return 0; }
@@ -154,6 +315,7 @@ int alpm_unlock(alpm_handle_t *h) { (void)h; return 0; }
 
 /* Package property getters (some are already in libalpm.c - these cover the rest) */
 const char *alpm_pkg_get_filename(alpm_pkg_t *p) { (void)p; return NULL; }
+const char *alpm_pkg_get_md5sum(alpm_pkg_t *p) { (void)p; return NULL; }
 const char *alpm_pkg_get_base(alpm_pkg_t *p) { (void)p; return NULL; }
 const char *alpm_pkg_get_packager(alpm_pkg_t *p) { (void)p; return NULL; }
 const char *alpm_pkg_get_sha256sum(alpm_pkg_t *p) { (void)p; return NULL; }
@@ -169,7 +331,6 @@ void *alpm_pkg_get_replaces(alpm_pkg_t *p) { (void)p; return NULL; }
 void *alpm_pkg_get_checkdepends(alpm_pkg_t *p) { (void)p; return NULL; }
 void *alpm_pkg_get_makedepends(alpm_pkg_t *p) { (void)p; return NULL; }
 void *alpm_pkg_get_xdata(alpm_pkg_t *p) { (void)p; return NULL; }
-void *alpm_pkg_get_db(alpm_pkg_t *p) { (void)p; return NULL; }
 void *alpm_pkg_get_handle(alpm_pkg_t *p) { (void)p; return NULL; }
 alpm_pkg_t *alpm_pkg_find(void *list, const char *name) { (void)list; (void)name; return NULL; }
 int alpm_pkg_should_ignore(alpm_handle_t *h, alpm_pkg_t *p) { (void)h; (void)p; return 0; }

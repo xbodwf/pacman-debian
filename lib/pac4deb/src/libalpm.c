@@ -87,6 +87,7 @@ typedef struct __alpm_pkg_internal {
 	off_t size, isize;
 	alpm_pkgvalidation_t validation;
 	int has_scriptlet;
+	void *db; /* back-reference to owning database */
 } pkg_internal;
 
 static pkg_internal *pkg_new(const char *name) {
@@ -95,7 +96,7 @@ static pkg_internal *pkg_new(const char *name) {
 	return p;
 }
 
-static void pkg_free(pkg_internal *p) {
+void pkg_free(pkg_internal *p) {
 	if (!p) return;
 	free(p->name); free(p->version); free(p->desc); free(p->url);
 	free(p->arch); free(p->base64_sig); free(p->depends);
@@ -193,14 +194,14 @@ static pkg_internal *json_to_pkg(json_ctx *j) {
 }
 
 /* Load JSONL file (one flat JSON object per line) */
-static alpm_list_t *load_jsonl_file(const char *filepath) {
+alpm_list_t *load_jsonl_file(const char *filepath) {
 	alpm_list_t *pkgs = NULL;
 	int fd = open(filepath, O_RDONLY);
 	if (fd < 0) return NULL;
 	struct stat st;
 	if (fstat(fd, &st) < 0) { close(fd); return NULL; }
 	if (st.st_size == 0) { close(fd); return NULL; }
-	char *buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+	char *buf = mmap(NULL, st.st_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
 	close(fd);
 	if (buf == MAP_FAILED) return NULL;
 
@@ -225,6 +226,24 @@ static alpm_list_t *load_jsonl_file(const char *filepath) {
 		line = nl ? nl + 1 : end;
 	}
 	munmap(buf, st.st_size);
+	return pkgs;
+}
+
+/* Parse a single JSON line from memory buffer */
+alpm_list_t *load_jsonl_mem(const char *json_str) {
+	alpm_list_t *pkgs = NULL;
+	if (!json_str || *json_str != '{') return NULL;
+	json_ctx j;
+	json_init(&j, (char *)json_str);
+	if (json_next(&j) == '{') {
+		pkg_internal *p = json_to_pkg(&j);
+		if (p->name && *(p->name)) {
+			p->origin = ALPM_PKG_FROM_SYNCDB;
+			pkgs = alpm_list_add(pkgs, p);
+		} else {
+			pkg_free(p);
+		}
+	}
 	return pkgs;
 }
 
@@ -385,6 +404,12 @@ static int load_sync_db(alpm_db_t *db) {
 	char path[4096];
 	snprintf(path, sizeof(path), "%s/%s", PKG_CACHE, db->treename);
 	db->pkgs = load_jsonl_dir(path);
+	/* Set back-reference to owning database on each package */
+	alpm_list_t *it;
+	for (it = db->pkgs; it; it = it->next) {
+		pkg_internal *p = it->data;
+		if (p) p->db = db;
+	}
 	return 0;
 }
 
@@ -397,6 +422,12 @@ alpm_db_t *alpm_db_register_local(alpm_handle_t *handle) {
 
 alpm_db_t *alpm_db_register_sync(alpm_handle_t *handle, const char *treename) {
 	if (!handle || !treename) return NULL;
+	/* check if already registered */
+	alpm_list_t *it;
+	for (it = handle->syncdbs; it; it = it->next) {
+		alpm_db_t *db = it->data;
+		if (db && strcmp(db->treename, treename) == 0) return db;
+	}
 	alpm_db_t *db = db_new(treename, 0);
 	if (!db) return NULL;
 	load_sync_db(db);
@@ -424,16 +455,222 @@ int alpm_db_unregister_all(alpm_handle_t *handle) {
 	return 0;
 }
 
+/* Read a single package from JSONL by offset (shared with stubs_manual.c) */
+static alpm_pkg_t *pkg_from_idx_line(const char *pkgdir, const char *chunkfile, int offset) {
+	char path[4096];
+	snprintf(path, sizeof(path), "%s/%s", pkgdir, chunkfile);
+	int fd = open(path, O_RDONLY);
+	if (fd < 0) return NULL;
+	char buf[65536];
+	int n = pread(fd, buf, sizeof(buf) - 1, offset);
+	close(fd);
+	if (n <= 0) return NULL;
+	buf[n] = 0;
+	char *nl = strchr(buf, '\n');
+	if (nl) *nl = 0;
+	if (buf[0] != '{') return NULL;
+	alpm_list_t *pkgs = load_jsonl_mem(buf);
+	if (!pkgs) return NULL;
+	alpm_pkg_t *result = (alpm_pkg_t *)pkgs->data;
+	free(pkgs);
+	return result;
+}
+
+/* Look up package in packages.idx using binary search (fast, no full loading) */
+static alpm_pkg_t *pkg_by_idx(alpm_db_t *db, const char *name) {
+	char idxpath[4096];
+	snprintf(idxpath, sizeof(idxpath), "%s/%s/packages.idx", PKG_CACHE, db->treename);
+	int fd = open(idxpath, O_RDONLY);
+	if (fd < 0) return NULL;
+	struct stat st;
+	if (fstat(fd, &st) < 0) { close(fd); return NULL; }
+	char *buf = malloc(st.st_size + 1);
+	if (!buf) { close(fd); return NULL; }
+	int n = read(fd, buf, st.st_size);
+	close(fd);
+	if (n <= 0) { free(buf); return NULL; }
+	buf[n] = 0;
+
+	/* Split into lines */
+	char **lines = NULL;
+	int nlines = 0;
+	char *line = buf;
+	while (line && *line) {
+		char *nl = strchr(line, '\n');
+		if (nl) *nl = 0;
+		if (*line) {
+			lines = realloc(lines, (nlines + 1) * sizeof(char*));
+			lines[nlines++] = line;
+		}
+		line = nl ? nl + 1 : NULL;
+	}
+
+	/* Binary search */
+	int lo = 0, hi = nlines - 1;
+	alpm_pkg_t *result = NULL;
+	while (lo <= hi) {
+		int mid = (lo + hi) / 2;
+		char *ln = lines[mid];
+		int name_len = 0;
+		while (ln[name_len] && ln[name_len] != ' ') name_len++;
+		int cmp = strncmp(name, ln, name_len);
+		if (cmp == 0 && name_len == (int)strlen(name)) {
+			char *last_tab = NULL, *second_last_tab = NULL;
+			int tab_count = 0;
+			for (char *q = ln; *q; q++) {
+				if (*q == '\t') { second_last_tab = last_tab; last_tab = q; tab_count++; }
+			}
+			if (tab_count >= 2 && last_tab && second_last_tab) {
+				int offset = atoi(last_tab + 1);
+				*last_tab = 0;
+				char *chunkfile = second_last_tab + 1;
+				char pkgdir[4096];
+				snprintf(pkgdir, sizeof(pkgdir), "%s/%s", PKG_CACHE, db->treename);
+				result = pkg_from_idx_line(pkgdir, chunkfile, offset);
+				if (result) ((pkg_internal *)result)->db = db;
+			}
+			break;
+		} else if (cmp < 0 || (cmp == 0 && name_len < (int)strlen(name))) {
+			hi = mid - 1;
+		} else {
+			lo = mid + 1;
+		}
+	}
+
+	free(lines);
+	free(buf);
+	return result;
+}
+
 alpm_pkg_t *alpm_db_get_pkg(alpm_db_t *db, const char *name) {
 	if (!db || !name) return NULL;
-	if (db->is_local) load_local_db(db);
-	else load_sync_db(db);
-	alpm_list_t *it;
-	for (it = db->pkgs; it; it = it->next) {
-		pkg_internal *p = it->data;
-		if (p && p->name && strcmp(p->name, name) == 0) return (alpm_pkg_t *)p;
+	if (db->is_local) {
+		load_local_db(db);
+		alpm_list_t *it;
+		for (it = db->pkgs; it; it = it->next) {
+			pkg_internal *p = it->data;
+			if (p && p->name && strcmp(p->name, name) == 0)
+				return (alpm_pkg_t *)p;
+		}
+		return NULL;
 	}
-	return NULL;
+	/* For sync DBs, use fast idx binary search */
+	return pkg_by_idx(db, name);
+}
+
+/* Scan packages.idx for pattern matching (fast, no full JSONL load) */
+static alpm_list_t *search_via_idx(alpm_db_t *db, const alpm_list_t *needles) {
+	char idxpath[4096];
+	snprintf(idxpath, sizeof(idxpath), "%s/%s/packages.idx", PKG_CACHE, db->treename);
+	int fd = open(idxpath, O_RDONLY);
+	if (fd < 0) return NULL;
+	struct stat st;
+	if (fstat(fd, &st) < 0) { close(fd); return NULL; }
+	char *buf = malloc(st.st_size + 1);
+	if (!buf) { close(fd); return NULL; }
+	int n = read(fd, buf, st.st_size);
+	close(fd);
+	if (n <= 0) { free(buf); return NULL; }
+	buf[n] = 0;
+
+	alpm_list_t *results = NULL;
+	const alpm_list_t *needle;
+	
+	char *line = buf;
+	while (line && *line) {
+		char *nl = strchr(line, '\n');
+		if (nl) *nl = 0;
+		if (*line) {
+			/* line format: pkgName description\tprovides\tchunkFile\toffset */
+			const char *desc_start = line;
+			while (*desc_start && *desc_start != ' ') desc_start++;
+			if (*desc_start == ' ') desc_start++;
+			const char *desc_end = desc_start;
+			while (*desc_end && *desc_end != '\t') desc_end++;
+			
+			/* Get pkgName (first token) */
+			int name_len = 0;
+			while (line[name_len] && line[name_len] != ' ') name_len++;
+			
+			for (needle = needles; needle; needle = needle->next) {
+				const char *pattern = (const char *)needle->data;
+				if (!pattern || !*pattern) continue;
+				
+				/* Check name match */
+				char name_buf[512];
+				if (name_len < 512) {
+					memcpy(name_buf, line, name_len);
+					name_buf[name_len] = 0;
+				}
+				
+				int found = 0;
+				if (strcasestr(line, pattern)) found = 1; /* name or desc */
+				else if (desc_end > desc_start) {
+					/* Check description separately */
+					int dlen = desc_end - desc_start;
+					if (dlen < 4096) {
+						char desc_buf[4096];
+						memcpy(desc_buf, desc_start, dlen);
+						desc_buf[dlen] = 0;
+						if (strcasestr(desc_buf, pattern)) found = 1;
+					}
+				}
+				
+				if (found) {
+					/* Parse idx line to get chunkfile and offset */
+					char *last_tab = NULL, *second_last_tab = NULL;
+					for (char *q = line; *q; q++) {
+						if (*q == '\t') { second_last_tab = last_tab; last_tab = q; }
+					}
+					if (last_tab && second_last_tab) {
+						int offset = atoi(last_tab + 1);
+						*last_tab = 0;
+						char *chunkfile = second_last_tab + 1;
+						char pkgdir[4096];
+						snprintf(pkgdir, sizeof(pkgdir), "%s/%s", PKG_CACHE, db->treename);
+						alpm_pkg_t *pkg = pkg_from_idx_line(pkgdir, chunkfile, offset);
+						if (pkg) {
+							((pkg_internal *)pkg)->db = db;
+							results = alpm_list_add(results, pkg);
+						}
+					}
+					break;
+				}
+			}
+		}
+		line = nl ? nl + 1 : NULL;
+	}
+	free(buf);
+	return results;
+}
+
+int alpm_db_search(alpm_db_t *db, const alpm_list_t *needles, alpm_list_t **ret) {
+	if (!db || !needles || !ret) return -1;
+	*ret = NULL;
+	if (db->is_local) {
+		load_local_db(db);
+		/* Local DB search: iterate packages */
+		alpm_list_t *results = NULL;
+		const alpm_list_t *p;
+		for (p = db->pkgs; p; p = p->next) {
+			pkg_internal *pkg = p->data;
+			if (!pkg || !pkg->name) continue;
+			const alpm_list_t *n;
+			for (n = needles; n; n = n->next) {
+				const char *pat = (const char *)n->data;
+				if (!pat || !*pat) continue;
+				if (strcasestr(pkg->name, pat) || (pkg->desc && strcasestr(pkg->desc, pat))) {
+					results = alpm_list_add(results, pkg);
+					break;
+				}
+			}
+		}
+		*ret = results;
+	} else {
+		/* Sync DB: use fast idx-based search */
+		*ret = search_via_idx(db, needles);
+	}
+	return 0;
 }
 
 alpm_list_t *alpm_db_get_pkgcache(alpm_db_t *db) {
@@ -452,6 +689,24 @@ int alpm_db_set_pkgreason(alpm_handle_t *handle, const char *name, alpm_pkgreaso
 const char *alpm_pkg_get_name(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->name : NULL; }
 const char *alpm_pkg_get_version(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->version : NULL; }
 const char *alpm_pkg_get_desc(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->desc : NULL; }
+
+int alpm_pkg_has_provide(alpm_pkg_t *pkg, const char *name) {
+	if (!pkg || !name) return 0;
+	pkg_internal *p = (pkg_internal *)pkg;
+	if (!p->provides || !*p->provides) return 0;
+	char *copy = strdup(p->provides);
+	char *token = strtok(copy, ",");
+	while (token) {
+		while (*token == ' ') token++;
+		char *end = token + strlen(token) - 1;
+		while (end > token && (*end == ' ')) end--;
+		end[1] = 0;
+		if (strcmp(token, name) == 0) { free(copy); return 1; }
+		token = strtok(NULL, ",");
+	}
+	free(copy);
+	return 0;
+}
 const char *alpm_pkg_get_url(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->url : NULL; }
 const char *alpm_pkg_get_arch(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->arch : NULL; }
 const char *alpm_pkg_get_base64_sig(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->base64_sig : NULL; }
@@ -463,6 +718,8 @@ off_t alpm_pkg_get_size(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->s
 off_t alpm_pkg_get_isize(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->isize : 0; }
 alpm_pkgvalidation_t alpm_pkg_get_validation(alpm_pkg_t *pkg) { (void)pkg; return ALPM_PKG_VALIDATION_NONE; }
 int alpm_pkg_has_scriptlet(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->has_scriptlet : 0; }
+void *alpm_pkg_get_db(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->db : NULL; }
+void alpm_pkg_set_db(alpm_pkg_t *pkg, void *db) { if (pkg) ((pkg_internal *)pkg)->db = db; }
 void alpm_pkg_free(alpm_pkg_t *pkg) { pkg_free((pkg_internal *)pkg); }
 
 /* ---- Options ---- */
@@ -479,7 +736,39 @@ int alpm_option_set_dbpath(alpm_handle_t *handle, const char *dbpath) {
 int alpm_option_set_gpgdir(alpm_handle_t *handle, const char *gpgdir) { (void)handle; (void)gpgdir; return 0; }
 const char *alpm_option_get_dbpath(alpm_handle_t *handle) { return handle ? handle->dbpath : DB_DIR; }
 alpm_db_t *alpm_option_get_localdb(alpm_handle_t *handle) { return handle ? handle->localdb : NULL; }
-alpm_list_t *alpm_option_get_syncdbs(alpm_handle_t *handle) { return handle ? handle->syncdbs : NULL; }
+/* Check if a sync db's packages.idx exists */
+static int sync_db_has_idx(alpm_db_t *db) {
+	char path[4096];
+	snprintf(path, sizeof(path), "%s/%s/packages.idx", PKG_CACHE, db->treename);
+	struct stat st;
+	return stat(path, &st) == 0 ? 1 : 0;
+}
+
+static void ensure_syncdbs(alpm_handle_t *handle) {
+	if (!handle || handle->syncdbs) return;
+	DIR *d = opendir(PKG_CACHE);
+	if (!d) return;
+	struct dirent *e;
+	while ((e = readdir(d)) != NULL) {
+		if (e->d_name[0] == '.') continue;
+		char p[4096];
+		snprintf(p, sizeof(p), "%s/%s", PKG_CACHE, e->d_name);
+		struct stat st;
+		if (stat(p, &st) == 0 && S_ISDIR(st.st_mode)) {
+			alpm_db_t *db = db_new(e->d_name, 0);
+			if (db) {
+				/* Don't load packages yet - lazy loading via idx */
+				handle->syncdbs = alpm_list_add(handle->syncdbs, db);
+			}
+		}
+	}
+	closedir(d);
+}
+
+alpm_list_t *alpm_option_get_syncdbs(alpm_handle_t *handle) {
+	if (handle) ensure_syncdbs(handle);
+	return handle ? handle->syncdbs : NULL;
+}
 
 /* ---- Logging ---- */
 int alpm_logaction(alpm_handle_t *handle, const char *fmt, ...) {
@@ -507,6 +796,11 @@ int alpm_capabilities(void) { return ALPM_CAPABILITY_NLS; }
 alpm_db_t *alpm_register_syncdb(alpm_handle_t *handle, const char *treename, int level) {
 	(void)level;
 	if (!handle || !treename) return NULL;
+	alpm_list_t *it;
+	for (it = handle->syncdbs; it; it = it->next) {
+		alpm_db_t *db = it->data;
+		if (db && strcmp(db->treename, treename) == 0) return db;
+	}
 	alpm_db_t *db = db_new(treename, 0);
 	if (!db) return NULL;
 	load_sync_db(db);

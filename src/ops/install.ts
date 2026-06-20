@@ -51,6 +51,12 @@ async function installDeb(filePath: string, reason: 'explicit' | 'dependency', o
     runScript(control.package, 'postinst', ['configure']);
   }
 
+  // Run ldconfig if package installs shared libraries
+  const hasSoFiles = files.some(f => /\.so(\.|$)/.test(f));
+  if (hasSoFiles) {
+    try { execSync('/usr/sbin/ldconfig', { stdio: 'inherit' }); } catch {}
+  }
+
   const ip: InstalledPackage = {
     name: control.package, version: control.version,
     architecture: control.architecture || 'amd64',
@@ -104,6 +110,12 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
   if (!opts.noscriptlet && install?.post_install) {
     const tmpScript = `/var/lib/pacman-debian/info/${info.name}/.INSTALL`;
     try { execSync(`/bin/bash -c 'source "${tmpScript}" && post_install'`, { stdio: 'inherit' }); } catch {}
+  }
+
+  // Run ldconfig if package installs shared libraries
+  const hasSoFiles = files.some(f => /\.so(\.|$)/.test(f));
+  if (hasSoFiles) {
+    try { execSync('/usr/sbin/ldconfig', { stdio: 'inherit' }); } catch {}
   }
 
   const ip: InstalledPackage = {
@@ -322,18 +334,18 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   for (const err of depErrors) console.error(t('warn_prefix', err));
   if (depErrors.length > 0 && depResults.length === 0) return 0;
 
-  // Dedupe: targets first, then deps
+  // Dedupe: deps first, then targets (Arch pacman convention)
   const allPkgs: RepoPkg[] = [];
   const seen = new Set<string>();
-  for (const rp of targetPkgs) {
-    if (seen.has(rp.package)) continue;
-    seen.add(rp.package);
-    allPkgs.push(rp);
-  }
   for (const dr of depResults) {
     if (seen.has(dr.pkg.package)) continue;
     seen.add(dr.pkg.package);
     allPkgs.push(dr.pkg);
+  }
+  for (const rp of targetPkgs) {
+    if (seen.has(rp.package)) continue;
+    seen.add(rp.package);
+    allPkgs.push(rp);
   }
 
   // Conflict detection
@@ -390,10 +402,9 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       process.stdout.write(`\r${formatPfx(i + 1, allPkgs.length)}${pname.padEnd(nameMax)}${dl.val.padStart(6)} ${dl.unit}  ${rateS} ${etaS} [${bar}] ${String(pct).padStart(3)}%`);
     });
 
-    const barDone = drawProgressBar(100, cols);
-    process.stdout.write(`\r${t('progress_checking_integrity', String(i + 1), String(allPkgs.length), barDone)}\n`);
-    process.stdout.write(t('progress_loading_files', String(i + 1), String(allPkgs.length), barDone) + '\n');
-    process.stdout.write(t('progress_installing', String(i + 1), String(allPkgs.length), pname.padEnd(nameMax), barDone) + '\n');
+    // 下载完成，输出摘要行
+    const dlLine = `(${i + 1}/${allPkgs.length}) ${pname.padEnd(nameMax)} ${humanSize(p.size || 0, 1).val.padStart(6)} ${humanSize(p.size || 0, 1).unit}`;
+    process.stdout.write(`\r${' '.repeat(cols)}\r${dlLine}\n`);
     await installPkgFile(localPath, isExplicit ? (opts.asdeps ? 'dependency' : 'explicit') : 'dependency', opts);
   }
 

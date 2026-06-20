@@ -119,6 +119,7 @@ Architecture = auto
 
 ```
 /var/lib/pacman-debian/local/
+├── index.json       # 包名 → 目录映射（base64 编码路径）
 ├── by-name/
 │   ├── fastfetch -> ../fastfetch-2.64.2-2/
 │   └── ...
@@ -127,6 +128,9 @@ Architecture = auto
 │   └── files         # 文件清单
 └── ...
 ```
+
+`index.json` 以 `name:base64path` 格式逐行记录包名到目录的映射，是删除和查询
+的首选查找路径。若文件缺失或损坏会自动从文件系统重建。
 
 ### dpkg 兼容
 
@@ -195,6 +199,17 @@ AUR 助手（如 yay）无需修改即可在 Debian 上运行。它读取：
 - 同步数据库（`/var/cache/pacman-debian/packages/*/` — JSONL 块）
 
 提供了 200+ 个不常用函数的桩实现。
+
+关键实现细节：
+
+- **packages.idx 二分查找（C）**：`alpm_db_get_pkg` 和 `alpm_find_dbs_satisfier`
+  对排序索引做二分查找，然后按字节偏移读取单行 JSONL——不加载全部 JSONL。
+- **自动注册 sync DB**：`ensure_syncdbs` 在首次调用 `alpm_get_syncdbs` 时扫描
+  `/var/cache/pacman-debian/packages/`，懒加载注册所有可用仓库。
+- **包 DB 指针**：`pkg_internal.db` 字段记录所属数据库；`alpm_pkg_get_db` 返回它，
+  防止 `DB().Name()` 空指针崩溃。
+- **基于 idx 的搜索**：`alpm_db_search` 扫描索引行做模式匹配，而非加载全部包。
+  6 仓库/15000 包的情况下 `-Ss` 约 1.5 秒。
 
 ## makepkg（`src/makepkg/`）
 
@@ -328,7 +343,10 @@ makepkg --syncdeps --install
 - 系统包保护（glibc、libc6 等）
 - `upgradeMode`：升级时依赖基准为"已安装版本"，而非"仓库最新版本"
 
-版本比较委托给 `dpkg --compare-versions`，带有数字/字符串回退。
+- **文件验证**：已安装的包如果磁盘上没有真实文件（只剩空目录），视为未安装，
+  强制重新下载。
+- **显式目标始终处理依赖**：即使目标已安装，也会遍历其依赖检查缺失项。
+- **队列出队**：依赖队列用 `shift()` 弹出已处理项，防止内存堆积。
 
 ### 性能优化
 

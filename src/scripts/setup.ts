@@ -203,8 +203,8 @@ async function main() {
         const so16 = '/usr/local/lib/libalpm.so.16';
         if (!fs.existsSync(so16)) {
           fs.symlinkSync('libalpm.so', so16);
-          execSync('/sbin/ldconfig', { stdio: 'pipe' });
         }
+        execSync('/sbin/ldconfig', { stdio: 'pipe' });
         console.log('  libalpm.so built and installed to /usr/local/lib/');
       } catch (e: any) {
         console.error('  Warning: libalpm build failed:', e.message);
@@ -242,6 +242,60 @@ async function main() {
   } else {
     console.log(`  Virtual pacman package already exists in dpkg status`);
   }
+
+  // --- Virtual package mappings (Arch → Debian) ---
+  const pkgMappings: Record<string, { pkg: string; ver?: string }> = {
+    'glibc':    { pkg: 'libc6', ver: '2.36' },
+    'gcc-libs': { pkg: 'libgcc-s1', ver: '12.2' },
+    'gcc':      { pkg: 'gcc', ver: '12.2' },
+    'libstdc++':{ pkg: 'libstdc++6', ver: '12.2' },
+    'zlib':     { pkg: 'zlib1g', ver: '1:1.2.13' },
+    'openssl':  { pkg: 'libssl3', ver: '3.0' },
+    'libssl':   { pkg: 'libssl3', ver: '3.0' },
+    'libcrypt': { pkg: 'libcrypt1', ver: '1:4.4.33' },
+    'libcurl':  { pkg: 'libcurl4', ver: '7.88' },
+    'libpcre':  { pkg: 'libpcre3', ver: '2:8.39' },
+    'libpcre2': { pkg: 'libpcre2-8-0', ver: '10.42' },
+    'libffi':   { pkg: 'libffi8', ver: '3.4.4' },
+  };
+
+  // Create pkgmap.json
+  const pkgmapPath = path.join(CONFIG_DIR, 'pkgmap.json');
+  const existingMap: Record<string, any> = {};
+  if (fs.existsSync(pkgmapPath)) {
+    try { Object.assign(existingMap, JSON.parse(fs.readFileSync(pkgmapPath, 'utf8'))); } catch {}
+  }
+  const mergedMap = { ...pkgMappings, ...existingMap };
+  fs.writeFileSync(pkgmapPath, JSON.stringify(mergedMap, null, 2) + '\n');
+
+  // Create virtual dpkg entries for mapped packages
+  const dpkgStatus = fs.readFileSync(DPKG_STATUS, 'utf8');
+  let added = 0;
+  for (const [archName, deb] of Object.entries(mergedMap)) {
+    if (!dpkgStatus.includes(`\nPackage: ${archName}\n`)) {
+      // Only create virtual entry if the mapped Debian pkg is actually installed
+      if (dpkgStatus.includes(`\nPackage: ${deb.pkg}\n`)) {
+        const entry = [
+          `Package: ${archName}`,
+          `Status: install ok installed`,
+          `Priority: optional`,
+          `Section: virtual`,
+          `Installed-Size: 1`,
+          `Maintainer: pacman-debian`,
+          `Architecture: ${process.arch === 'arm64' ? 'arm64' : 'amd64'}`,
+          `Version: ${deb.ver || '1.0'}`,
+          `Description: Virtual package provided by pacman-debian (maps to ${deb.pkg})`,
+          ``,
+        ].join('\n');
+        fs.appendFileSync(DPKG_STATUS, '\n' + entry);
+        // Create empty .list file to suppress dpkg warnings
+        const listPath = `/var/lib/dpkg/info/${archName}.list`;
+        if (!fs.existsSync(listPath)) fs.writeFileSync(listPath, '');
+        added++;
+      }
+    }
+  }
+  if (added > 0) console.log(`  Created ${added} virtual package mappings in dpkg status`);
 
   console.log('');
   console.log(':: Setup complete');

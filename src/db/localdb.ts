@@ -5,6 +5,7 @@ import type { InstalledPackage } from '../core/types';
 const LOCAL_DIR = '/var/lib/pacman-debian/local';
 const BYNAME_DIR = path.join(LOCAL_DIR, 'by-name');
 const FILE_INDEX = '/var/lib/pacman-debian/file-index.json';
+const PKG_INDEX = '/var/lib/pacman-debian/local/index.json'; // name → dir
 
 function ensure(): void {
   if (!fs.existsSync(LOCAL_DIR)) fs.mkdirSync(LOCAL_DIR, { recursive: true });
@@ -76,23 +77,29 @@ export function addPackage(pkg: InstalledPackage): void {
   const link = path.join(BYNAME_DIR, pkg.name);
   try { fs.unlinkSync(link); } catch {}
   fs.symlinkSync(path.relative(BYNAME_DIR, dir), link);
+  updatePkgIndex(pkg.name, dir);
   updateFileIndex(pkg.name, pkg.files);
 }
 
 export function removePackage(name: string, version?: string): void {
   ensure();
-  // Find the dir
   const link = path.join(BYNAME_DIR, name);
+  // 优先查索引
   let dir: string | null = null;
-  if (fs.existsSync(link)) try { dir = fs.readlinkSync(link); } catch {}
+  const idx = loadPkgIndex();
+  if (idx[name]) {
+    const p = path.join(LOCAL_DIR, idx[name]);
+    if (fs.existsSync(p)) dir = p;
+  }
+  if (!dir && fs.existsSync(link)) try { dir = fs.readlinkSync(link); } catch {}
   if (!dir && version) {
     dir = pkgDirFromName(name, version);
     if (!fs.existsSync(dir)) dir = null;
   }
   if (!dir) {
-    // Search local dir
     for (const entry of fs.readdirSync(LOCAL_DIR)) {
-      if (entry.startsWith(name + '-')) { dir = path.join(LOCAL_DIR, entry); break; }
+      const m = entry.match(/^(.+?)-(\d.*)$/);
+      if (m && m[1] === name) { dir = path.join(LOCAL_DIR, entry); break; }
     }
   }
   if (dir && fs.existsSync(dir)) {
@@ -100,6 +107,7 @@ export function removePackage(name: string, version?: string): void {
     removeFileIndex(name, files);
     fs.rmSync(dir, { recursive: true });
   }
+  removePkgIndex(name);
   try { fs.unlinkSync(link); } catch {}
 }
 
@@ -146,6 +154,63 @@ export function getAllPackages(): InstalledPackage[] {
     if (pkg) result.push(pkg);
   }
   return result;
+}
+
+/* ---- package directory index ---- */
+let _pkgIndex: Record<string, string> | null = null;
+
+function rebuildPkgIndex(): Record<string, string> {
+  const idx: Record<string, string> = {};
+  if (fs.existsSync(LOCAL_DIR)) {
+    for (const entry of fs.readdirSync(LOCAL_DIR)) {
+      if (entry === 'by-name' || entry.startsWith('.')) continue;
+      const m = entry.match(/^(.+?)-(\d.*)$/);
+      if (m) idx[m[1]] = entry;
+    }
+  }
+  savePkgIndex(idx);
+  _pkgIndex = idx;
+  return idx;
+}
+
+function loadPkgIndex(): Record<string, string> {
+  if (_pkgIndex) return _pkgIndex;
+  if (!fs.existsSync(PKG_INDEX)) return rebuildPkgIndex();
+  try {
+    const text = fs.readFileSync(PKG_INDEX, 'utf8');
+    _pkgIndex = {};
+    for (const line of text.split('\n').filter(Boolean)) {
+      const colon = line.indexOf(':');
+      if (colon <= 0) continue;
+      const name = line.slice(0, colon);
+      const encoded = line.slice(colon + 1);
+      _pkgIndex[name] = Buffer.from(encoded, 'base64').toString('utf8');
+    }
+    if (Object.keys(_pkgIndex!).length === 0) return rebuildPkgIndex();
+  } catch { return rebuildPkgIndex(); }
+  return _pkgIndex!;
+}
+
+function savePkgIndex(idx: Record<string, string>): void {
+  const lines: string[] = [];
+  for (const [name, dir] of Object.entries(idx)) {
+    // base64 编码路径避免转义问题
+    const encoded = Buffer.from(dir).toString('base64');
+    lines.push(`${name}:${encoded}`);
+  }
+  fs.writeFileSync(PKG_INDEX, lines.join('\n') + '\n');
+}
+
+function updatePkgIndex(name: string, dir: string): void {
+  const idx = loadPkgIndex();
+  idx[name] = path.relative(LOCAL_DIR, dir);
+  savePkgIndex(idx);
+}
+
+function removePkgIndex(name: string): void {
+  const idx = loadPkgIndex();
+  delete idx[name];
+  savePkgIndex(idx);
 }
 
 /* ---- file index (for -Qo) ---- */

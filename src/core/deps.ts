@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import { execSync } from 'node:child_process';
 import { findInRepo, findProvides, batchFindInRepo } from '../repo/repository';
 import { loadDatabase } from '../db/database';
@@ -82,6 +83,7 @@ function checkVersion(installed: string, operator: string, required: string): bo
 /* ---- Fast path: pre-load DBs once ---- */
 interface DepState {
   localPkgs: Map<string, string>;
+  localHasFiles: Set<string>;  // packages that have at least one file on disk
   dpkgPkgs: Map<string, string>;
   repoCache: RepoPkg[] | null;
 }
@@ -99,19 +101,40 @@ function getState(): DepState {
   if (_state) return _state;
   const local = loadDatabase();
   const localMap = new Map<string, string>();
-  for (const [n, p] of local.packages) localMap.set(n, p.version);
+  const localHasFiles = new Set<string>();
+  for (const [n, p] of local.packages) {
+    localMap.set(n, p.version);
+    if (!p.files || p.files.length === 0) continue;
+    for (const f of p.files) {
+      // Skip pure directory entries - only count real files
+      if (f.endsWith('/')) continue;
+      try { if (fs.existsSync(f)) { localHasFiles.add(n); break; } } catch {}
+    }
+  }
 
   const dpkg = readDpkgStatus();
   const dpkgMap = new Map<string, string>();
   for (const [n, p] of dpkg) dpkgMap.set(n, p.version);
 
-  _state = { localPkgs: localMap, dpkgPkgs: dpkgMap, repoCache: null };
+  _state = { localPkgs: localMap, localHasFiles, dpkgPkgs: dpkgMap, repoCache: null };
   return _state;
 }
 
 /* ---- Check if dep is satisfied (optionally version-aware for upgrades) ---- */
 function isDepSatisfied(dep: Dep, state: DepState, upgradeMode = false): boolean {
-  const installedVer = state.localPkgs.get(dep.name) || state.dpkgPkgs.get(dep.name);
+  // Check local pacman-debian DB first (with file existence verification)
+  const localVer = state.localPkgs.get(dep.name);
+  if (localVer) {
+    if (!state.localHasFiles.has(dep.name)) return false;
+    if (dep.operator && dep.version) return checkVersion(localVer, dep.operator, dep.version);
+    if (upgradeMode) {
+      const rp = findInRepo(dep.name);
+      if (rp && rp.version !== localVer) return false;
+    }
+    return true;
+  }
+  // Fall back to dpkg
+  const installedVer = state.dpkgPkgs.get(dep.name);
   if (!installedVer) return false;
   if (dep.operator && dep.version) {
     return checkVersion(installedVer, dep.operator, dep.version);
@@ -145,14 +168,18 @@ export function resolveDeps(targets: string[], opts: ResolveDepsOptions = {}): {
   const seen = new Set<string>();
   const resolvedSet = new Set<string>();
   const queue: string[] = [...targets];
-  let qi = 0;
+  let processedCount = 0;
 
-  while (qi < queue.length) {
-    const name = queue[qi++];
+  while (queue.length > 0) {
+    const name = queue.shift()!;
+    processedCount++;
     if (seen.has(name)) continue;
     seen.add(name);
 
-    if (isDepSatisfied({ name }, state, opts.upgradeMode)) continue;
+    const satisfied = isDepSatisfied({ name }, state, opts.upgradeMode);
+
+    // 已安装且是显式目标 → 仍要处理其依赖
+    if (satisfied && processedCount > targets.length) continue;
 
     if (SYSTEM_PKGS.has(name)) {
       if (!state.dpkgPkgs.has(name))
@@ -179,6 +206,14 @@ export function resolveDeps(targets: string[], opts: ResolveDepsOptions = {}): {
     }
   }
 
+  // 排序：依赖在前，显式目标在后
+  install.sort((a, b) => {
+    const aIsTarget = targets.includes(a.pkg.package);
+    const bIsTarget = targets.includes(b.pkg.package);
+    if (aIsTarget && !bIsTarget) return 1;
+    if (!aIsTarget && bIsTarget) return -1;
+    return 0;
+  });
   return { install, errors };
 }
 

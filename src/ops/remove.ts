@@ -8,6 +8,21 @@ import type { Database } from '../core/types';
 import { t } from '../i18n';
 
 const DPKG_INFO = '/var/lib/dpkg/info';
+const LOCAL_DIR = '/var/lib/pacman-debian/local';
+
+/** 暴力扫 local/ 目录删除指定包的数据 */
+function purgeLocalDir(name: string): void {
+  if (!fs.existsSync(LOCAL_DIR)) return;
+  for (const entry of fs.readdirSync(LOCAL_DIR)) {
+    if (entry === 'by-name') continue;
+    // 匹配 name-version，version 以数字开头：非贪婪取 name
+    const m = entry.match(/^(.+?)-(\d.*)$/);
+    if (m && m[1] === name) {
+      try { fs.rmSync(path.join(LOCAL_DIR, entry), { recursive: true }); } catch {}
+      try { fs.unlinkSync(path.join(LOCAL_DIR, 'by-name', name)); } catch {}
+    }
+  }
+}
 
 /** Read conffiles list from dpkg for a package, if available. */
 function getConffiles(pkgName: string): string[] {
@@ -159,6 +174,8 @@ function removeSingle(name: string, opts: RemoveOptions = {}): boolean {
 
     try { removeDpkgEntry(n); } catch {}
     removePkg(db, n);
+    // 暴力清理：确保目录被删（removePkg 有时不生效）
+    purgeLocalDir(n);
   }
 
   saveDatabase(db);
@@ -213,10 +230,8 @@ export async function removeByName(name: string, opts: RemoveOptions = {}): Prom
     return true;
   }
 
-  const cols = process.stdout.columns || 80;
-  const bar = '#'.repeat(Math.max(Math.floor((cols - 45) * 0.35), 8));
-  removeSingle(name, opts);
-  process.stdout.write(t('progress_removing', '1', '1', name, bar) + '\n');
+  const result = removeSingle(name, opts);
+  if (!result) return false;
   console.log(t('pkg_removed', name));
   return true;
 }
