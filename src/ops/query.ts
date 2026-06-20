@@ -6,7 +6,7 @@ import { readDpkgStatus } from '../db/dpkg-compat';
 import { searchRepo } from '../repo/repository';
 import { t } from '../i18n';
 
-export function listInstalled(filter?: string): void {
+export function listInstalled(filter?: string, quiet = false): void {
   const dpkg = readDpkgStatus();
   let pkgs = [...dpkg.values()];
   if (filter) {
@@ -15,7 +15,7 @@ export function listInstalled(filter?: string): void {
   }
   if (pkgs.length === 0) { console.log(t('no_pkgs_installed')); return; }
   pkgs.sort((a, b) => a.package.localeCompare(b.package));
-  for (const p of pkgs) console.log(`${p.package} ${p.version}`);
+  for (const p of pkgs) console.log(quiet ? p.package : `${p.package} ${p.version}`);
 }
 
 export function listExplicit(): void {
@@ -45,15 +45,23 @@ export function checkIntegrity(name?: string): void {
   if (name) {
     const p = localdb.getPackage(name);
     if (!p) { console.error(t('error_not_installed', name)); return; }
-    let missing = 0;
-    for (const f of p.files) { if (!fs.existsSync(f)) missing++; }
-    console.log(missing === 0 ? t('integrity_ok', name, String(p.files.length)) : t('integrity_warning', name, String(missing)));
+    let missing = 0, empty = 0;
+    for (const f of p.files) {
+      if (!fs.existsSync(f)) { missing++; continue; }
+      try { if (fs.statSync(f).size === 0) empty++; } catch {}
+    }
+    const total = missing + empty;
+    console.log(total === 0 ? t('integrity_ok', name, String(p.files.length)) : t('integrity_warning', name, String(total)));
     return;
   }
   for (const p of localdb.getAllPackages()) {
-    let missing = 0;
-    for (const f of p.files) { if (!fs.existsSync(f)) missing++; }
-    if (missing > 0) console.log(t('integrity_warning_global', p.name, String(missing)));
+    let missing = 0, empty = 0;
+    for (const f of p.files) {
+      if (!fs.existsSync(f)) { missing++; continue; }
+      try { if (fs.statSync(f).size === 0) empty++; } catch {}
+    }
+    const total = missing + empty;
+    if (total > 0) console.log(t('integrity_warning_global', p.name, String(total)));
   }
 }
 

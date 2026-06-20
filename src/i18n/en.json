@@ -110,5 +110,11 @@
   "error_no_files_in_pkgdir": "package() produced no files in $pkgdir",
   "error_sha256_mismatch": "sha256sum mismatch for {0}",
   "error_md5_mismatch": "md5sum mismatch for {0}",
+  "confirm_proceed": ":: Proceed with installation?",
+  "warn_prefix": "  warning: {0}",
+  "progress_loading_data": "({0}/{1}) loading package data...           {2} 100%",
+  "progress_installing_single": "({0}/{1}) installing {2}{3} 100%",
+  "progress_upgrading": "({0}/{1}) upgrading {2}...",
+  "would_upgrade": "  would upgrade: {0}",
   "error_no_build_function": "PKGBUILD has no build(), prepare(), check(), or package() function"
 }

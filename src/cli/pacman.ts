@@ -2,12 +2,13 @@ import { installPkg, installPackages } from '../ops/install';
 import { removeByName } from '../ops/remove';
 import { listInstalled, showInfo, queryFile, listFiles, listExplicit, listDeps, listOrphans, checkIntegrity } from '../ops/query';
 import { syncAndUpgrade, upgradeOnly } from '../ops/upgrade';
-import { syncRepos, searchRepo, findInRepo, downloadPkg, getRepoCache } from '../repo/repository';
+import { syncRepos, searchRepo, findInRepo, downloadPkg, getPkgUrl, getRepoCache } from '../repo/repository';
 import { initDb, loadDatabase, saveDatabase, getPackage } from '../db/database';
 import { readDpkgStatus } from '../db/dpkg-compat';
 import { setNoConfirm } from '../ui/prompt';
 import { t as t_ } from '../i18n';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import pkg from '../../package.json';
 
 function needRoot() {
@@ -26,9 +27,26 @@ function help(): void {
 }
 
 function cleanCache(all: boolean): void {
-  if (fs.existsSync(CACHE)) { fs.rmSync(CACHE, { recursive: true }); fs.mkdirSync(CACHE, { recursive: true }); }
-  if (all && fs.existsSync(PCACHE)) { fs.rmSync(PCACHE, { recursive: true }); }
-  console.log(all ? t_('cache_cleaned_all') : t_('cache_cleaned_pkg'));
+  if (all) {
+    // -Scc: wipe everything
+    if (fs.existsSync(CACHE)) { fs.rmSync(CACHE, { recursive: true }); fs.mkdirSync(CACHE, { recursive: true }); }
+    if (fs.existsSync(PCACHE)) { fs.rmSync(PCACHE, { recursive: true }); }
+    console.log(t_('cache_cleaned_all'));
+    return;
+  }
+  // -Sc: remove cached .deb/.pkg.tar.zst files only (keep repo index metadata)
+  if (!fs.existsSync(PCACHE)) return;
+  let removed = 0;
+  for (const entry of fs.readdirSync(PCACHE)) {
+    const fp = path.join(PCACHE, entry);
+    try {
+      if (fs.statSync(fp).isFile()) {
+        fs.unlinkSync(fp);
+        removed++;
+      }
+    } catch {}
+  }
+  console.log(t_('cache_cleaned_pkg') + ` (${removed} removed)`);
 }
 
 function listRepoContents(repoName?: string): void {
@@ -186,15 +204,22 @@ export async function parseArgs(args: string[]): Promise<void> {
     if (doSingleClean) { needRoot(); cleanCache(false); return; }
     if (doClean) { needRoot(); cleanCache(true); return; }
     if (doDownload) {
+      needRoot();
       for (const t of rest) {
         const p = findInRepo(t);
-        if (p) console.log(t_('pkg_downloaded', t));
-        else console.log(t_('error_not_found', t));
+        if (p) {
+          await downloadPkg(p);
+          console.log(t_('pkg_downloaded', t));
+        } else console.log(t_('error_not_found', t));
       }
       return;
     }
     if (doPrint) {
-      for (const t of rest) console.log(t_('would_install', t));
+      for (const t of rest) {
+        const p = findInRepo(t);
+        if (p) console.log(getPkgUrl(p));
+        else console.log(t_('error_not_found', t));
+      }
       return;
     }
     needRoot();
@@ -250,7 +275,7 @@ export async function parseArgs(args: string[]): Promise<void> {
       if (q === 'd') { listDeps(); return; }
       if (q === 'dt') { listOrphans(); return; }
       if (q === 'k') { checkIntegrity(); return; }
-      if (q === 'q') { listInstalled(); return; }
+      if (q === 'q') { listInstalled(undefined, true); return; }
       if (q.length > 1 && q[0] === 'k') { checkIntegrity(q.slice(1)); return; }
       console.error(t_('error_unknown_option', q));
       return;

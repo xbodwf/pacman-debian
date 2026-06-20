@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { findInRepo, getRepoCache } from '../repo/repository';
+import { findInRepo, findProvides, batchFindInRepo } from '../repo/repository';
 import { loadDatabase } from '../db/database';
 import { readDpkgStatus, dpkgHasPackage } from '../db/dpkg-compat';
 import type { RepoPkg } from './types';
@@ -109,82 +109,54 @@ function getState(): DepState {
   return _state;
 }
 
-/* ---- Check if dep is satisfied ---- */
-function isDepSatisfied(dep: Dep, state: DepState): boolean {
+/* ---- Check if dep is satisfied (optionally version-aware for upgrades) ---- */
+function isDepSatisfied(dep: Dep, state: DepState, upgradeMode = false): boolean {
   const installedVer = state.localPkgs.get(dep.name) || state.dpkgPkgs.get(dep.name);
   if (!installedVer) return false;
   if (dep.operator && dep.version) {
     return checkVersion(installedVer, dep.operator, dep.version);
   }
+  // No version constraint — if upgradeMode, check repo for newer version
+  if (upgradeMode) {
+    const rp = findInRepo(dep.name);
+    if (rp && rp.version !== installedVer) return false; // upgrade available
+  }
   return true;
 }
 
-/* ---- Find provider in repo ---- */
-function findProvider(name: string, state: DepState): RepoPkg | undefined {
+/* ---- Find provider in repo (uses cached idx + provides index) ---- */
+function findProvider(name: string, _state: DepState): RepoPkg | undefined {
+  // Direct lookup via cached idx (binary search, no disk I/O)
   const direct = findInRepo(name);
   if (direct) return direct;
-
-  // Search provides via packages.idx (index has provides field)
-  const { loadConfig } = require('../repo/config');
-  const { readPkgAt } = require('../repo/repository');
-  const fs = require('node:fs');
-  const path = require('node:path');
-
-  const cfg = loadConfig();
-  const PKG_CACHE = '/var/cache/pacman-debian/packages';
-  for (const repo of cfg.repos) {
-    const pkgDir = path.join(PKG_CACHE, repo.name);
-    const idxPath = path.join(pkgDir, 'packages.idx');
-    if (!fs.existsSync(idxPath)) continue;
-    const idx = fs.readFileSync(idxPath, 'utf8').split('\n');
-    for (const line of idx) {
-      if (!line) continue;
-      // idx: pkgname desc\tprovides\tchunkFile\toffset
-      const firstTab = line.indexOf('\t');
-      if (firstTab < 0) continue;
-      const rest = line.slice(firstTab + 1);
-      const secondTab = rest.indexOf('\t');
-      if (secondTab < 0) continue;
-      const provides = rest.slice(0, secondTab);
-      if (!provides) continue;
-      if (provides.split(',').some((pr: string) => {
-        const pn = pr.trim().split(/[<>=]/)[0].trim();
-        return pn === name;
-      })) {
-        const lastTab = line.lastIndexOf('\t');
-        const byteOff = parseInt(line.slice(lastTab + 1), 10);
-        const beforeOff = line.slice(0, lastTab);
-        const thirdLastTab = beforeOff.lastIndexOf('\t');
-        const chunkFile = beforeOff.slice(thirdLastTab + 1);
-        if (chunkFile && !isNaN(byteOff)) {
-          return readPkgAt(pkgDir, chunkFile, byteOff);
-        }
-      }
-    }
-  }
-  return undefined;
+  // Provides lookup via inverted index (O(1) instead of O(N))
+  return findProvides(name);
 }
 
 /* ---- Full dependency resolution ---- */
-export function resolveDeps(targets: string[]): { install: DepResult[]; errors: string[] } {
+export interface ResolveDepsOptions {
+  upgradeMode?: boolean;
+}
+
+export function resolveDeps(targets: string[], opts: ResolveDepsOptions = {}): { install: DepResult[]; errors: string[] } {
   const state = getState();
   const install: DepResult[] = [];
   const errors: string[] = [];
   const seen = new Set<string>();
-  const toProcess: string[] = [...targets];
+  const resolvedSet = new Set<string>();
+  const queue: string[] = [...targets];
+  let qi = 0;
 
-  while (toProcess.length > 0) {
-    const name = toProcess.shift()!;
+  while (qi < queue.length) {
+    const name = queue[qi++];
     if (seen.has(name)) continue;
     seen.add(name);
 
-    if (isDepSatisfied({ name }, state)) continue;
+    if (isDepSatisfied({ name }, state, opts.upgradeMode)) continue;
 
-    // System packages must come from dpkg - skip Arch versions
     if (SYSTEM_PKGS.has(name)) {
-      if (!state.dpkgPkgs.has(name)) {
+      if (!state.dpkgPkgs.has(name))
         errors.push(`'${name}' is a system package not available via dpkg`);
-      }
       continue;
     }
 
@@ -194,15 +166,15 @@ export function resolveDeps(targets: string[]): { install: DepResult[]; errors: 
       continue;
     }
 
-    const alreadyResolved = install.some(i => i.pkg.package === rp.package);
-    if (!alreadyResolved) {
-      install.push({ pkg: rp, needed: true, reason: 'target' });
+    if (!resolvedSet.has(rp.package)) {
+      resolvedSet.add(rp.package);
+      const reason = opts.upgradeMode && state.localPkgs.has(rp.package) ? 'upgrade' : 'target';
+      install.push({ pkg: rp, needed: true, reason });
     }
 
-    const deps = parseDepList(rp.depends);
-    for (const d of deps) {
-      if (!seen.has(d.name) && !isDepSatisfied(d, state)) {
-        toProcess.push(d.name);
+    for (const d of parseDepList(rp.depends)) {
+      if (!seen.has(d.name) && !isDepSatisfied(d, state, opts.upgradeMode)) {
+        queue.push(d.name);
       }
     }
   }

@@ -1,5 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as https from 'node:https';
+import * as http from 'node:http';
+import * as net from 'node:net';
 import { execSync } from 'node:child_process';
 import { parseDeb, readScript } from '../core/deb';
 import { extractTar } from '../core/tar';
@@ -62,7 +65,7 @@ async function installDeb(filePath: string, reason: 'explicit' | 'dependency', o
   };
 
   addPackage(db, ip);
-  try { writeDpkgEntry(ip); } catch (e) { console.error('  WARNING: failed to write dpkg status:', e); }
+  try { writeDpkgEntry(ip); } catch (e) { console.error(t('warn_failed_dpkg_status', String(e))); }
   saveDatabase(db);
   completeTransaction(tx.id);
   return true;
@@ -77,6 +80,8 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
   const db = loadDatabase();
   const existing = getPackage(db, info.name);
   if (opts.needed && existing && existing.version === info.version) return false;
+
+  const tx = createTransaction('install', info.name, info.version);
 
   if (!opts.noscriptlet && install?.pre_install) {
     const script = `pre_install() {\n${install.pre_install}\n}\npost_install() { ${install.post_install || ''} }\npre_remove() { ${install.pre_remove || ''} }\npost_remove() { ${install.post_remove || ''} }\n`;
@@ -115,35 +120,176 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
   };
 
   addPackage(db, ip);
-  try { writeDpkgEntry(ip); } catch (e) { console.error('  WARNING: failed to write dpkg status:', e); }
+  try { writeDpkgEntry(ip); } catch (e) { console.error(t('warn_failed_dpkg_status', String(e))); }
   saveDatabase(db);
+  completeTransaction(tx.id);
   return true;
 }
 
 export async function installPkgFile(filePath: string, reason: 'explicit' | 'dependency', opts: InstallOptions = {}): Promise<boolean> {
-  if (opts.print) { console.log(`  would install: ${path.basename(filePath)}`); return true; }
+  if (opts.print) { console.log(t('would_install', path.basename(filePath))); return true; }
   if (filePath.endsWith('.pkg.tar.zst') || filePath.endsWith('.pkg.tar.xz') || filePath.endsWith('.pkg.tar.gz')) {
     return installArch(filePath, reason, opts);
   }
   return installDeb(filePath, reason, opts);
 }
 
-export async function installPkg(target: string, opts: InstallOptions = {}): Promise<boolean> {
-  if (fs.existsSync(target) && ['.deb', '.pkg.tar.zst', '.pkg.tar.xz', '.pkg.tar.gz'].some(e => target.endsWith(e))) {
-    const cols = process.stdout.columns || 80;
-    const barLen = Math.max(Math.floor((cols - 30) * 0.35), 8);
-    const barDone = '#'.repeat(barLen);
-    const fname = path.basename(target).replace(/\.(pkg\.tar\.(zst|xz|gz)|deb)$/, '');
+function parseFtpUrl(url: string): { host: string; port: number; user: string; pass: string; path: string } {
+  const rest = url.slice(6);
+  const atIdx = rest.lastIndexOf('@');
+  let user = 'anonymous', pass = 'pacman-debian@';
+  let hostPart: string;
+  if (atIdx > 0) {
+    const auth = rest.slice(0, atIdx);
+    const colonIdx = auth.indexOf(':');
+    user = colonIdx >= 0 ? auth.slice(0, colonIdx) : auth;
+    pass = colonIdx >= 0 ? auth.slice(colonIdx + 1) : '';
+    hostPart = rest.slice(atIdx + 1);
+  } else {
+    hostPart = rest;
+  }
+  const slashIdx = hostPart.indexOf('/');
+  const hostPort = slashIdx >= 0 ? hostPart.slice(0, slashIdx) : hostPart;
+  const path = slashIdx >= 0 ? hostPart.slice(slashIdx) : '/';
+  const colonIdx = hostPort.lastIndexOf(':');
+  const host = colonIdx >= 0 ? hostPort.slice(0, colonIdx) : hostPort;
+  const port = colonIdx >= 0 ? parseInt(hostPort.slice(colonIdx + 1), 10) : 21;
+  return { host, port, user, pass, path };
+}
 
-    console.log(`Packages (1): ${fname}\n`);
-    if (!await confirm(':: Proceed with installation?')) return false;
-    if (opts.print) { console.log(`  would install: ${path.basename(target)}`); return true; }
-    process.stdout.write(`(1/1) loading package data...           ${barDone} 100%\n`);
-    process.stdout.write(`(1/1) installing ${fname.padEnd(25)}${barDone} 100%\n`);
-    return await installPkgFile(path.resolve(target), 'explicit', opts);
+function ftpReadReply(sock: net.Socket): Promise<string> {
+  return new Promise((resolve) => {
+    let buf = '';
+    const onData = (data: Buffer) => {
+      buf += data.toString();
+      if (buf.includes('\r\n')) { sock.off('data', onData); resolve(buf.trim()); }
+    };
+    sock.on('data', onData);
+  });
+}
+
+function ftpCommand(sock: net.Socket, cmd: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    sock.write(cmd + '\r\n');
+    let buf = '';
+    const onData = (data: Buffer) => {
+      buf += data.toString();
+      if (buf.length >= 4 && buf[3] === ' ') { sock.off('data', onData); resolve(buf.trim()); }
+    };
+    sock.on('data', onData);
+    setTimeout(() => { sock.off('data', onData); reject(new Error('FTP command timeout')); }, 15000);
+  });
+}
+
+async function downloadFtp(url: string, dest: string): Promise<void> {
+  const { host, port, user, pass, path } = parseFtpUrl(url);
+  return new Promise((resolve, reject) => {
+    const sock = new net.Socket();
+    const chunks: Buffer[] = [];
+    let dataSock: net.Socket | null = null;
+
+    sock.connect(port, host, async () => {
+      try {
+        await ftpReadReply(sock); // greeting
+        await ftpCommand(sock, `USER ${user}`);
+        await ftpCommand(sock, `PASS ${pass}`);
+
+        // PASV
+        const pasvResp = await ftpCommand(sock, 'PASV');
+        const m = pasvResp.match(/\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\)/);
+        if (!m) { reject(new Error('Failed to parse PASV response')); sock.end(); return; }
+        const dataHost = `${m[1]}.${m[2]}.${m[3]}.${m[4]}`;
+        const dataPort = parseInt(m[5], 10) * 256 + parseInt(m[6], 10);
+
+        dataSock = new net.Socket();
+        dataSock.connect(dataPort, dataHost, () => {
+          ftpCommand(sock, `RETR ${path}`).catch(() => {});
+        });
+
+        dataSock.on('data', (data: Buffer) => chunks.push(data));
+        dataSock.on('end', () => {
+          ftpCommand(sock, 'QUIT').catch(() => {});
+          const buf = Buffer.concat(chunks);
+          fs.writeFileSync(dest, buf);
+          sock.end();
+          resolve();
+        });
+        dataSock.on('error', (e) => { reject(e); sock.end(); });
+      } catch (e) { reject(e); sock.end(); }
+    });
+    sock.on('error', reject);
+  });
+}
+
+async function downloadUrl(url: string, dest: string): Promise<void> {
+  const mod = url.startsWith('https') ? https : http;
+  return new Promise((resolve, reject) => {
+    mod.get(url, { headers: { 'User-Agent': 'pacman-debian/7.2.0' } }, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        const next = res.headers.location.startsWith('http') ? res.headers.location : url;
+        downloadUrl(next, dest).then(resolve, reject);
+        return;
+      }
+      if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
+        reject(new Error(`HTTP ${res.statusCode}`));
+        return;
+      }
+      const ws = fs.createWriteStream(dest);
+      res.pipe(ws);
+      ws.on('finish', resolve);
+      ws.on('error', reject);
+    }).on('error', reject);
+  });
+}
+
+export async function installPkg(target: string, opts: InstallOptions = {}): Promise<boolean> {
+  const cacheDir = '/var/cache/pacman-debian';
+  if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
+
+  let localPath: string;
+  let fname: string;
+  let isUrl = false;
+
+  if (target.startsWith('file://')) {
+    localPath = target.slice(7);
+    if (!fs.existsSync(localPath)) { console.error(`error: file not found: ${localPath}`); return false; }
+    fname = path.basename(localPath).replace(/\.(pkg\.tar\.(zst|xz|gz)|deb)$/, '');
+  } else if (target.includes('://')) {
+    isUrl = true;
+    const ext = target.match(/\.(deb|pkg\.tar\.(zst|xz|gz))$/)?.[0];
+    if (!ext) { console.error('error: unsupported package URL'); return false; }
+    fname = path.basename(target);
+    localPath = path.join(cacheDir, fname);
+    if (!fs.existsSync(localPath)) {
+      process.stdout.write(`downloading ${fname}...\n`);
+      try {
+        if (target.startsWith('ftp://')) await downloadFtp(target, localPath);
+        else await downloadUrl(target, localPath);
+      } catch (e: any) {
+        console.error(`error: failed to download: ${e.message}`);
+        return false;
+      }
+    }
+  } else if (fs.existsSync(target) && ['.deb', '.pkg.tar.zst', '.pkg.tar.xz', '.pkg.tar.gz'].some(e => target.endsWith(e))) {
+    localPath = path.resolve(target);
+    fname = path.basename(target).replace(/\.(pkg\.tar\.(zst|xz|gz)|deb)$/, '');
+  } else {
+    console.error(`error: target '${target}' is not a package file or URL`);
+    return false;
   }
 
-  return (await installPackages([target], opts)) > 0;
+  const cols = process.stdout.columns || 80;
+  const barLen = Math.max(Math.floor((cols - 30) * 0.35), 8);
+  const barDone = '#'.repeat(barLen);
+
+  console.log(t('packages_single', fname) + '\n');
+  if (!await confirm(t('confirm_proceed'))) return false;
+  if (opts.print) { console.log(t('would_install', fname)); return true; }
+  process.stdout.write(t('progress_loading_data', '1', '1', barDone) + '\n');
+  process.stdout.write(t('progress_installing_single', '1', '1', fname, barDone) + '\n');
+  const result = await installPkgFile(localPath, 'explicit', opts);
+  if (isUrl) try { fs.unlinkSync(localPath); } catch {}
+  return result;
 }
 
 export async function installPackages(targets: string[], opts: InstallOptions = {}): Promise<number> {
@@ -151,19 +297,19 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
 
   // Validate targets exist
   const targetPkgs: RepoPkg[] = [];
-  for (const t of targets) {
-    const rp = findInRepo(t);
+  for (const target of targets) {
+    const rp = findInRepo(target);
     if (!rp) {
       const cacheDir = '/var/cache/pacman-debian/packages';
       if (!fs.existsSync(cacheDir) || fs.readdirSync(cacheDir).length === 0) {
-        console.error('error: database not synced (run pacman -Sy)');
+        console.error(t('error_db_not_synced'));
         return 0;
       }
-      console.error(`error: '${t}' not found`);
+      console.error(t('error_not_found', target));
       continue;
     }
-    if (opts.needed && dpkgHasPackage(t)) {
-      console.log(`  ${t} is up to date`);
+    if (opts.needed && dpkgHasPackage(target)) {
+      console.log(t('pkg_up_to_date', target));
       continue;
     }
     targetPkgs.push(rp);
@@ -171,9 +317,9 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   if (targetPkgs.length === 0) return 0;
 
   // Resolve dependencies
-  console.log('resolving dependencies...');
+  console.log(t('resolving_deps'));
   const { install: depResults, errors: depErrors } = resolveDeps(targets);
-  for (const err of depErrors) console.error(`  warning: ${err}`);
+  for (const err of depErrors) console.error(t('warn_prefix', err));
   if (depErrors.length > 0 && depResults.length === 0) return 0;
 
   // Dedupe: targets first, then deps
@@ -191,29 +337,29 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   }
 
   // Conflict detection
-  console.log('looking for conflicting packages...\n');
+  console.log(t('checking_conflicts') + '\n');
   const conflicts = detectConflicts(allPkgs);
   for (const c of conflicts) {
     console.error(`  ${c.reason}`);
   }
   if (conflicts.length > 0) {
     console.error('');
-    console.error('error: unresolvable package conflicts detected');
+    console.error(t('error_unresolvable_conflicts'));
     return 0;
   }
 
   const totalSize = allPkgs.reduce((s, p) => s + (p.size || 0), 0);
   const totalInst = allPkgs.reduce((s, p) => s + ((p.installedSize || 0) * 1024), 0);
 
-  console.log(`Packages (${allPkgs.length}): ${allPkgs.map(p => p.package).join('  ')}\n`);
-  console.log(`Total Download Size:   ${formatBytes(totalSize).padStart(9)}`);
-  console.log(`Total Installed Size:  ${formatBytes(totalInst).padStart(9)}`);
+  console.log(t('packages_multi', String(allPkgs.length), allPkgs.map(p => p.package).join('  ')) + '\n');
+  console.log(t('total_download_size', formatBytes(totalSize).padStart(9)));
+  console.log(t('total_installed_size', formatBytes(totalInst).padStart(9)));
   console.log('');
 
-  if (!await confirm(':: Proceed with installation?')) return 0;
+  if (!await confirm(t('confirm_proceed'))) return 0;
 
   if (opts.print) {
-    for (const p of allPkgs) console.log(`  would install: ${p.package}-${p.version}`);
+    for (const p of allPkgs) console.log(t('would_install', `${p.package}-${p.version}`));
     return allPkgs.length;
   }
 
@@ -226,7 +372,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
 
     let prevTime = Date.now(), prevBytes = 0, smoothRate = 0;
     const pname = p.package.length > nameMax ? p.package.slice(0, nameMax - 3) + '...' : p.package;
-    process.stdout.write(`${formatPfx(i + 1, allPkgs.length)}downloading ${pname}`);
+    process.stdout.write(t('progress_downloading', String(i + 1), String(allPkgs.length), pname));
 
     const localPath = await downloadPkg(p, undefined, (rec, tot) => {
       const now = Date.now();
@@ -245,9 +391,9 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     });
 
     const barDone = drawProgressBar(100, cols);
-    process.stdout.write(`\r${formatPfx(i + 1, allPkgs.length)}checking package integrity            ${barDone} 100%\n`);
-    process.stdout.write(`${formatPfx(i + 1, allPkgs.length)}loading package files                 ${barDone} 100%\n`);
-    process.stdout.write(`${formatPfx(i + 1, allPkgs.length)}installing ${pname.padEnd(nameMax)}${barDone} 100%\n`);
+    process.stdout.write(`\r${t('progress_checking_integrity', String(i + 1), String(allPkgs.length), barDone)}\n`);
+    process.stdout.write(t('progress_loading_files', String(i + 1), String(allPkgs.length), barDone) + '\n');
+    process.stdout.write(t('progress_installing', String(i + 1), String(allPkgs.length), pname.padEnd(nameMax), barDone) + '\n');
     await installPkgFile(localPath, isExplicit ? (opts.asdeps ? 'dependency' : 'explicit') : 'dependency', opts);
   }
 

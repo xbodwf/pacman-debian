@@ -145,18 +145,34 @@ Architecture = auto
 ├── bookworm/
 │   ├── 00000.jsonl   # JSON Lines, ~5000 包/块
 │   ├── ...
-│   └── packages.idx  # 全局排序索引 (~200KB)
+│   ├── packages.idx  # 全局排序索引 (~200KB)
+│   └── .info         # 元数据（总数、块数）
 └── ...
 ```
 
-**查找路径：**
+#### 内存索引缓存
 
-| 操作 | 方法 | 原因 |
-|------|------|------|
-| `-S <pkg>` / `-Qo` | 二分搜索 `packages.idx` → seek JSONL | O(log N)，只读一行 |
-| `-Ss` | 逐行扫 `packages.idx`（包名+描述）→ seek JSONL | ~1.4MB 扫描，不解析 JSON |
-| `-Sl` | 扫 `packages.idx` → seek 每个包 | 全量懒加载 |
-| 依赖 provides | 扫 `packages.idx` provides 字段 | 纯索引，不读 JSONL |
+`packages.idx` 在首次读取后驻留内存，按仓库名 + mtime 缓存：
+
+```
+_idxCache = new Map<string, IdxEntry>();
+IdxEntry { lines: string[], mtime: number, providesIndex: Map<string, Array<{chunkFile, offset}>> }
+```
+
+- 后续 `-S`/`-Ss`/`-Sl` 操作直接读内存，不重复读盘
+- `providesIndex` 是倒排索引：`provides 名 → [{ chunkFile, offset }]`
+  - `findProvider()` 查 provides 时 O(1) `Map.get()`，无需扫文件
+- `pacman -Syy` 清空缓存（调用 `invalidateIdxCache()`）
+- 增量同步后 idx 文件 mtime 变化，自动重新加载
+
+#### 查找路径
+
+| 操作 | 磁盘方法 | 首次后方法 |
+|------|----------|-----------|
+| `-S <pkg>` / `-Qo` | 二分搜索 `packages.idx` → seek JSONL | 二分搜索内存 `lines[]` → seek JSONL |
+| `-Ss` | 逐行扫 `packages.idx`（包名+描述）→ seek JSONL | 扫内存 `lines[]`，不解析 JSON |
+| `-Sl` | 扫 `packages.idx` → seek 每个包 | 扫内存 `lines[]`，懒加载 |
+| 依赖 provides | 扫 `packages.idx` provides 字段 | 内存 `providesIndex.get()`，O(1) |
 | `-Qi` / `-Ql` | dpkg 状态或本地数据库 | 不涉及缓存 |
 
 ## 仓库支持
@@ -223,16 +239,16 @@ makepkg --syncdeps --install
 |------|------|
 | `pacman -S <pkg>` | 从仓库安装包 |
 | `pacman -Sy` | 刷新包数据库（mtime 检查，24 小时） |
-| `pacman -Syy` | 强制刷新包数据库 |
+| `pacman -Syy` | 强制刷新包数据库（清除内存 idx 缓存） |
 | `pacman -Su` | 升级所有已安装的包 |
 | `pacman -Syu` | 刷新数据库并升级 |
 | `pacman -Ss <keyword>` | 搜索仓库 |
 | `pacman -Si <pkg>` | 显示远程包信息 |
 | `pacman -Sl` | 列出仓库中所有包 |
-| `pacman -Sw <pkg>` | 只下载不安装 |
-| `pacman -Sc` | 删除未使用的缓存包 |
-| `pacman -Scc` | 删除所有缓存（含仓库数据） |
-| `pacman -Sp <pkg>` | 打印将要安装的内容（干运行） |
+| `pacman -Sw <pkg>` | 真正下载 .deb/.pkg.tar.zst 到缓存目录，不安装 |
+| `pacman -Sc` | 删除缓存目录中的 .deb/.pkg.tar.zst 文件，保留仓库元数据 |
+| `pacman -Scc` | 清空整个缓存目录（含仓库 jsonl/idx，需重新 -Sy） |
+| `pacman -Sp <pkg>` | 打印实际下载 URL（不会安装） |
 
 ### 删除（-R）
 
@@ -258,13 +274,15 @@ makepkg --syncdeps --install
 | `pacman -Ql <pkg>` | 列出包拥有的文件 |
 | `pacman -Qo <file>` | 查询文件属于哪个包 |
 | `pacman -Qs <keyword>` | 搜索已安装的包 |
-| `pacman -Qk [pkg]` | 验证已安装包的文件完整性 |
+| `pacman -Qk [pkg]` | 验证已安装包的文件完整性（检查文件是否存在且非空） |
+| `pacman -Qq` | 静默模式：仅输出包名，不带版本号 |
 
 ### 其他
 
 | 命令 | 说明 |
 |------|------|
 | `pacman -U <file>` | 安装本地包文件（.deb/.pkg.tar.zst） |
+| `pacman -U <url>` | 从 http/https/ftp URL 下载后安装，装完自动清理 |
 | `pacman -D --asdeps <pkg>` | 将包标记为依赖 |
 | `pacman -D --asexplicit <pkg>` | 将包标记为显式安装 |
 | `pacman -T <pkg>` | 检查依赖是否满足 |
@@ -305,11 +323,38 @@ makepkg --syncdeps --install
 - OR 依赖（`|`）
 - 架构限定符（如 `:arm64`、`:amd64`）
 - Debian（逗号分隔）和 Arch（空格分隔）两种格式
-- 带预加载 DB 状态的 BFS 解析
+- BFS 解析，带预加载 DB 状态
 - 已安装和待安装包之间的冲突检测
 - 系统包保护（glibc、libc6 等）
+- `upgradeMode`：升级时依赖基准为"已安装版本"，而非"仓库最新版本"
 
 版本比较委托给 `dpkg --compare-versions`，带有数字/字符串回退。
+
+### 性能优化
+
+| 技术 | 说明 |
+|------|------|
+| **idx 内存缓存** | `findInRepo()` 二分搜索直接在 `_idxCache` 的 `lines[]` 上进行，无需读文件（`src/repo/repository.ts:58`） |
+| **provides 倒排索引** | `providesIndex` 在 idx 加载时构建，`findProvider()` 直接 `Map.get()`，O(1) 定位（`src/repo/repository.ts:69`） |
+| **顺序 BFS + 指针游标** | 依赖队列用索引指针替代 `shift()`，避免数组塌缩开销（`src/core/deps.ts:74`） |
+| **已解析集合去重** | `resolved` 用 `Set<string>` 去重，避免重复解析相同依赖（`src/core/deps.ts:73`） |
+| **批量头尾双扫** | `batchFindInRepo()` 利用排序 idx 从首尾同时二分查找，适合升级候选收集（`src/repo/repository.ts`） |
+| **keep-alive HTTP** | 共享 `https.Agent({ keepAlive: true, maxSockets: 8 })`，复用 TCP/TLS 连接（`src/repo/repository.ts:22`） |
+| **异步解压 .gz** | `decompressAsync()` 用 `zlib.gunzip()` 回调版，不阻塞事件循环（`src/core/compress.ts:9`） |
+| **304 条件请求** | 同步时发 `If-Modified-Since`，服务端返回 304 直接跳过（`src/repo/repository.ts:96`） |
+
+### 删除时的依赖处理（`src/ops/remove.ts`）
+
+| 操作 | 逻辑 |
+|------|------|
+| `-R` | 仅删除指定包，不处理依赖 |
+| `-Rs` | 删除包 + 递归查找孤儿（不被其他包 RequiredBy 的包），按逆拓扑序删除 |
+| `-Rc` | 级联：找出所有"需要"目标包的包，一并删除 |
+| `-Rsc` | 递归 + 级联组合 |
+| `-Rn` | 备份 `/var/lib/dpkg/info/<pkg>.conffiles` 中的配置文件为 `.dpkg-old`，再删除 |
+
+删除时自动排序：被依赖者先删（叶子节点先于根节点），确保依赖检查不报错。
+`isRequiredByOthers()` 遍历所有已安装包的 `Depends` 字段，判断目标包是否被需要。
 
 ## 架构
 
@@ -398,11 +443,18 @@ make -C lib/pac4deb       # 构建 libalpm.so
 该项目在 v7.1.0 时更名为 `pacman-debian`。目前在 Debian 12 上
 可用于日常包管理。已有功能：
 
+- **依赖解析**：顺序 BFS + idx 内存缓存 + provides 倒排索引，亚秒级
+  依赖查找。删除时正确处理孤儿级联和 conffile 备份。
 - **性能优化**：`packages.idx` 索引实现亚秒级单包查找。`-Ss` 只扫索引
-  （不解析 JSON）。全量 `-Sl` 通过索引 seek。总共约 64k 包。
+  （不解析 JSON）。全量 `-Sl` 通过索引 seek。HTTP keep-alive agent
+  复用 TCP 连接，异步 zlib 解压不阻塞事件循环。
 - **并行同步**：多仓库并发下载，每仓库独立进度行。HTTP 条件请求（304）
-  跳过未变更仓库。
-- **多语言**：通过 `$LANG` 自动切换中英文。消息目录在 `src/i18n/`。
+  跳过未变更仓库。Debian 组件串行但多仓库并行。
+- **真正的下载能力**：`-Sw` 已能实际下载包文件，`-Sp` 打印真实 URL，
+  `-U` 支持 http/https/ftp/file URL 自动下载后安装。
+- **选择性缓存清理**：`-Sc` 只删包缓存保留元数据，`-Scc` 清空全部。
+- **多语言**：通过 `$LANG` 自动切换中英文。同步、安装、升级流程均已
+  本地化。消息目录在 `src/i18n/`。
 - **颜色输出**：遵守 `pacman.conf` 的 `Color` 选项。颜色方案匹配官方
   pacman（品红=仓库、绿=包名、红=错误）。
 - **权限分离**：查询命令（`-Q`、`-Ss`、`-Si`、`-Sp`、`-Rp`）无需 root。

@@ -17,7 +17,9 @@ export function loadDatabase(): Database {
   const db: Database = { packages: new Map(), fileIndex: new Map() };
   for (const pkg of localdb.getAllPackages()) {
     db.packages.set(pkg.name, pkg);
-    db.fileIndex.set(pkg.name, pkg.name);
+    for (const f of pkg.files) {
+      db.fileIndex.set(f, pkg.name);
+    }
   }
   return db;
 }

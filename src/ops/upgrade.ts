@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { readDpkgStatus } from '../db/dpkg-compat';
-import { syncRepos, findInRepo, downloadPkg } from '../repo/repository';
+import { syncRepos, findInRepo, batchFindInRepo, downloadPkg } from '../repo/repository';
 import { installPkgFile, installPackages } from './install';
 import type { RepoPkg } from '../core/types';
 import type { InstallOptions } from '../core/options';
@@ -38,12 +38,13 @@ async function collectUpgradeCandidates(): Promise<UpgradeTarget[]> {
   const installed = listInstalledFromLocal();
   const targets: UpgradeTarget[] = [];
 
+  // Batch resolve all installed packages in one head-tail scan
+  const repoPkgs = batchFindInRepo([...installed.keys()]);
   for (const [name, oldVer] of installed) {
-    const pkg = findInRepo(name);
+    const pkg = repoPkgs.get(name);
     if (!pkg) continue;
-    const newVer = pkg.version;
-    if (newVer && newVer !== oldVer) {
-      targets.push({ name, oldVer, newVer, pkg });
+    if (pkg.version && pkg.version !== oldVer) {
+      targets.push({ name, oldVer, newVer: pkg.version, pkg });
     }
   }
   return targets;
@@ -59,25 +60,23 @@ async function doUpgrade(opts: InstallOptions = {}): Promise<void> {
   console.log(t('starting_upgrade'));
   const targets = await collectUpgradeCandidates();
   if (targets.length === 0) { console.log(t('nothing_to_do')); return; }
-  console.log(`\nPackages (${targets.length}):`);
-  for (const t_ of targets) console.log(`  ${t_.name} ${t_.oldVer} -> ${t_.newVer}`);
-  console.log('');
-  if (!await confirm(':: Proceed with upgrade?')) { return; }
+  console.log(t('packages_multi', String(targets.length), targets.map(t_ => `${t_.name} ${t_.oldVer} -> ${t_.newVer}`).join('  ')));
+  if (!await confirm(t('confirm_proceed'))) { return; }
 
   if (opts.print) {
-    for (const t_ of targets) console.log(`  would upgrade: ${t_.name} ${t_.oldVer} -> ${t_.newVer}`);
+    for (const t_ of targets) console.log(t('would_upgrade', `${t_.name} ${t_.oldVer} -> ${t_.newVer}`));
     return;
   }
 
   for (let i = 0; i < targets.length; i++) {
     const t_ = targets[i];
-    console.log(`(${i + 1}/${targets.length}) downloading ${t_.name}...`);
+    process.stdout.write(t('progress_downloading', String(i + 1), String(targets.length), t_.name) + '...\n');
     const rp = findInRepo(t_.name);
-    if (!rp) { console.error(`  WARNING: ${t_.name} not found in repo`); continue; }
+    if (!rp) { console.error(t('warn_not_found_in_repo', t_.name)); continue; }
     const localPath = await downloadPkg(rp);
-    console.log(`(${i + 1}/${targets.length}) checking package integrity...`);
-    console.log(`(${i + 1}/${targets.length}) loading package files...`);
-    console.log(`(${i + 1}/${targets.length}) upgrading ${t_.name}...`);
+    console.log(t('progress_checking_integrity', String(i + 1), String(targets.length), ''));
+    console.log(t('progress_loading_files', String(i + 1), String(targets.length), ''));
+    console.log(t('progress_upgrading', String(i + 1), String(targets.length), t_.name));
     await installPkgFile(localPath, 'explicit', opts);
   }
 }

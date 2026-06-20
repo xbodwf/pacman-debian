@@ -11,6 +11,33 @@ export function decompress(data: Buffer, filename: string): Buffer {
   return data;
 }
 
+export function decompressAsync(data: Buffer, filename: string): Promise<Buffer> {
+  if (filename.endsWith('.gz')) return new Promise((resolve, reject) => {
+    zlib.gunzip(data, (err, buf) => err ? reject(err) : resolve(buf));
+  });
+  if (filename.endsWith('.xz') || filename.endsWith('.zst')) {
+    const tool = filename.endsWith('.xz') ? 'xz' : 'zstd';
+    return Promise.resolve(decompressWith(data, tool));
+  }
+  return Promise.resolve(data);
+}
+
+export async function decompressStream(stream: NodeJS.ReadableStream, ext: string): Promise<Buffer> {
+  if (ext === 'gz') {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      stream.pipe(zlib.createGunzip())
+        .on('data', (c: Buffer) => chunks.push(c))
+        .on('end', () => resolve(Buffer.concat(chunks)))
+        .on('error', reject);
+    });
+  }
+  // For xz/zst, collect then decompress
+  const chunks: Buffer[] = [];
+  for await (const c of stream) chunks.push(c as Buffer);
+  return decompressAsync(Buffer.concat(chunks), `packages.${ext}`);
+}
+
 function decompressWith(data: Buffer, tool: string): Buffer {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pmdeb-'));
   const inFile = path.join(tmp, `input.${tool === 'xz' ? 'xz' : 'zst'}`);
