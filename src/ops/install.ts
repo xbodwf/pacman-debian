@@ -13,6 +13,7 @@ import {
   saveScript, runScript, createTransaction, completeTransaction, parseDepends,
 } from '../db/database';
 import { writeDpkgEntry, dpkgHasPackage } from '../db/dpkg-compat';
+import { removePackage, getPackage as getLocalPkg } from '../db/localdb';
 import { resolveDeps, detectConflicts } from '../core/deps';
 import { formatBytes } from '../ui/format';
 import { humanSize, drawProgressBar, formatRate, formatETA } from '../ui/progress';
@@ -24,8 +25,9 @@ import type { InstallOptions } from '../core/options';
 async function installDeb(filePath: string, reason: 'explicit' | 'dependency', opts: InstallOptions = {}): Promise<boolean> {
   initDb();
   const pkg = parseDeb(filePath);
-  const { control } = pkg;
   const db = loadDatabase();
+  removeLinkIfPresent(pkg.control.package);
+  const { control } = pkg;
   const existing = getPackage(db, control.package);
 
   if (opts.needed && existing && existing.version === control.version) {
@@ -77,6 +79,15 @@ async function installDeb(filePath: string, reason: 'explicit' | 'dependency', o
   return true;
 }
 
+/* When installing a real package, remove any existing link with the same name.
+   Links are virtual mappings (Debian→Arch), real packages take precedence. */
+function removeLinkIfPresent(pkgName: string): void {
+  const existing = getLocalPkg(pkgName);
+  if (existing && existing.repoType === 'link') {
+    removePackage(pkgName, existing.version);
+  }
+}
+
 async function installArch(filePath: string, reason: 'explicit' | 'dependency', opts: InstallOptions = {}): Promise<boolean> {
   initDb();
   const data = fs.readFileSync(filePath);
@@ -84,6 +95,7 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
   if (!info.name) throw new Error('invalid .pkg.tar.zst: missing pkgname');
 
   const db = loadDatabase();
+  removeLinkIfPresent(info.name);
   const existing = getPackage(db, info.name);
   if (opts.needed && existing && existing.version === info.version) return false;
 

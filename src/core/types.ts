@@ -39,7 +39,7 @@ export interface InstalledPackage {
   installTime: number;
   reason: 'explicit' | 'dependency';
   files: string[];
-  repoType?: 'debian' | 'arch';
+  repoType?: 'debian' | 'arch' | 'link';
 }
 
 export interface RepoPkg {

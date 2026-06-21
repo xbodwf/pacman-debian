@@ -273,7 +273,7 @@ static alpm_list_t *load_dpkg_status(const char *path) {
 		if (end) *end = 0;
 
 		char name[256] = {0}, version[256] = {0}, arch[64] = {0}, desc[1024] = {0};
-		char depends[4096] = {0};
+		char depends[4096] = {0}, provides[4096] = {0};
 		int is_installed = 0;
 
 		char *line = p;
@@ -285,6 +285,7 @@ static alpm_list_t *load_dpkg_status(const char *path) {
 			else if (strncmp(line, "Architecture: ", 14) == 0) strncpy(arch, line + 14, sizeof(arch) - 1);
 			else if (strncmp(line, "Status: ", 8) == 0 && strstr(line, "install ok installed")) is_installed = 1;
 			else if (strncmp(line, "Depends: ", 9) == 0) strncpy(depends, line + 9, sizeof(depends) - 1);
+			else if (strncmp(line, "Provides: ", 10) == 0) strncpy(provides, line + 10, sizeof(provides) - 1);
 			else if (strncmp(line, "Description: ", 13) == 0) {
 				strncpy(desc, line + 13, sizeof(desc) - 1);
 				if (nl) {
@@ -307,9 +308,10 @@ static alpm_list_t *load_dpkg_status(const char *path) {
 			pkg->arch = strdup(arch[0] ? arch : "arm64");
 			pkg->desc = strdup(desc[0] ? desc : "");
 			pkg->depends = strdup(depends);
+			pkg->provides = strdup(provides[0] ? provides : "");
 			pkg->reason = ALPM_PKG_REASON_EXPLICIT;
 			pkgs = alpm_list_add(pkgs, pkg);
-		}
+}
 		p = end ? end + 2 : NULL;
 	}
 	free(buf);
@@ -350,6 +352,135 @@ static alpm_list_t *load_localdb_dir(const char *dirpath) {
 	return pkgs;
 }
 
+/* Resolve Debian alternatives: readlink /bin/<cmd> to find real binary,
+   then map its package name back to the virtual provide name.
+   e.g. /bin/sh -> dash -> add provides "sh" on the dash pkg_internal */
+static void add_alternative_provides(alpm_list_t *pkgs) {
+	static const char *cmds[] = {"sh", "awk", "editor", "pager", "vi", "which", "sed", NULL};
+	for (int c = 0; cmds[c]; c++) {
+		char lnk[256], real[256];
+		snprintf(lnk, sizeof(lnk), "/bin/%s", cmds[c]);
+		ssize_t len = readlink(lnk, real, sizeof(real) - 1);
+		if (len <= 0) {
+			snprintf(lnk, sizeof(lnk), "/usr/bin/%s", cmds[c]);
+			len = readlink(lnk, real, sizeof(real) - 1);
+		}
+		if (len <= 0) continue;
+		real[len] = 0;
+		char *base = strrchr(real, '/');
+		base = base ? base + 1 : real;
+		for (alpm_list_t *it = pkgs; it; it = it->next) {
+			pkg_internal *p = it->data;
+			if (strcmp(p->name, base) != 0) continue;
+			if (p->provides && *p->provides) {
+				char tmp[512]; snprintf(tmp, sizeof(tmp), ",%s,", p->provides);
+				char needle[64]; snprintf(needle, sizeof(needle), ",%s,", cmds[c]);
+				if (strstr(tmp, needle)) break;
+			}
+			size_t old = p->provides ? strlen(p->provides) : 0;
+			size_t add = strlen(cmds[c]);
+			char *nv = malloc(old + add + 3);
+			if (!nv) break;
+			if (p->provides) {
+				memcpy(nv, p->provides, old);
+				nv[old] = ',';
+				memcpy(nv + old + 1, cmds[c], add + 1);
+				free(p->provides);
+			} else {
+				memcpy(nv, cmds[c], add + 1);
+			}
+			p->provides = nv;
+			break;
+		}
+	}
+
+	/* Map common Arch library SONAMEs to Debian packages.
+	   For each lib<name>.so, check if a corresponding lib<name>* deb is installed. */
+	static const char *lib_map[][2] = {
+		{"zlib1g", "libz.so"},
+		{"libssl3t64", "libcrypto.so"}, {"libssl-dev", "libcrypto.so"},
+		{"libssl3t64", "libssl.so"}, {"libssl-dev", "libssl.so"},
+		{"libcurl4", "libcurl.so"}, {"libcurl4t64", "libcurl.so"},
+		{"libpcre3", "libpcre.so"},
+		{"liblzma5", "liblzma.so"},
+		{"libbz2-1.0", "libbz2.so"},
+		{"libzstd1", "libzstd.so"}, {"libzstd-dev", "libzstd.so"},
+		{"libgnutls30", "libgnutls.so"}, {"libgnutls30t64", "libgnutls.so"},
+		{"libgnutls30", "gnutls"}, {"libgnutls30t64", "gnutls"},
+		{"libfreetype6", "libfreetype.so"}, {"libfreetype-dev", "libfreetype.so"},
+		{"libpng16-16t64", "libpng16.so"}, {"libpng-dev", "libpng16.so"},
+		{"libjpeg62-turbo", "libjpeg.so"}, {"libjpeg62-turbo-dev", "libjpeg.so"},
+		{"libxml2", "libxml2.so"},
+		{"libexpat1", "libexpat.so"},
+		{"libsqlite3-0", "libsqlite3.so"},
+		{"libncursesw6", "libncursesw.so"},
+		{"libreadline8t64", "libreadline.so"},
+		{"libc6", "libc.so"}, {"libc6", "libm.so"}, {"libc6", "libpthread.so"}, {"libc6", "libdl.so"}, {"libc6", "librt.so"},
+		{"libsystemd0", "libsystemd.so"},
+		{NULL, NULL}
+	};
+	for (int i = 0; lib_map[i][0]; i++) {
+		for (alpm_list_t *it = pkgs; it; it = it->next) {
+			pkg_internal *p = it->data;
+			if (strcmp(p->name, lib_map[i][0]) != 0) continue;
+			const char *soname = lib_map[i][1];
+			if (p->provides && *p->provides) {
+				char tmp[512]; snprintf(tmp, sizeof(tmp), ",%s,", p->provides);
+				char needle[64]; snprintf(needle, sizeof(needle), ",%s,", soname);
+				if (strstr(tmp, needle)) break;
+			}
+			size_t old = p->provides ? strlen(p->provides) : 0;
+			size_t add = strlen(soname);
+			char *nv = malloc(old + add + 3);
+			if (!nv) break;
+			if (p->provides) {
+				memcpy(nv, p->provides, old);
+				nv[old] = ',';
+				memcpy(nv + old + 1, soname, add + 1);
+				free(p->provides);
+			} else {
+				memcpy(nv, soname, add + 1);
+			}
+			p->provides = nv;
+			break;
+		}
+	}
+
+	/* Map common Arch package names to Debian equivalents.
+	   These are packages that don't map 1:1 by name but provide equivalent functionality. */
+	static const char *pkg_map[][2] = {
+		{"ca-certificates", "ca-certificates-utils"},
+		{"python3", "python"},
+		{NULL, NULL}
+	};
+	for (int i = 0; pkg_map[i][0]; i++) {
+		for (alpm_list_t *it = pkgs; it; it = it->next) {
+			pkg_internal *p = it->data;
+			if (strcmp(p->name, pkg_map[i][0]) != 0) continue;
+			const char *virt = pkg_map[i][1];
+			if (p->provides && *p->provides) {
+				char tmp[512]; snprintf(tmp, sizeof(tmp), ",%s,", p->provides);
+				char needle[64]; snprintf(needle, sizeof(needle), ",%s,", virt);
+				if (strstr(tmp, needle)) break;
+			}
+			size_t old = p->provides ? strlen(p->provides) : 0;
+			size_t add = strlen(virt);
+			char *nv = malloc(old + add + 3);
+			if (!nv) break;
+			if (p->provides) {
+				memcpy(nv, p->provides, old);
+				nv[old] = ',';
+				memcpy(nv + old + 1, virt, add + 1);
+				free(p->provides);
+			} else {
+				memcpy(nv, virt, add + 1);
+			}
+			p->provides = nv;
+			break;
+		}
+	}
+}
+
 /* Load local database: our packages + dpkg status */
 static int load_local_db(alpm_db_t *db) {
 	if (db->pkgs) return 0;
@@ -362,6 +493,7 @@ static int load_local_db(alpm_db_t *db) {
 	snprintf(dpkg_path, sizeof(dpkg_path), "%s", DPKG_STATUS);
 	alpm_list_t *dpkg_pkgs = load_dpkg_status(dpkg_path);
 	if (dpkg_pkgs) {
+		add_alternative_provides(dpkg_pkgs);
 		if (db->pkgs) {
 			alpm_list_t *last = alpm_list_last(db->pkgs);
 			last->next = dpkg_pkgs;
@@ -710,6 +842,7 @@ int alpm_pkg_has_provide(alpm_pkg_t *pkg, const char *name) {
 const char *alpm_pkg_get_url(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->url : NULL; }
 const char *alpm_pkg_get_arch(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->arch : NULL; }
 const char *alpm_pkg_get_base64_sig(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->base64_sig : NULL; }
+void *alpm_pkg_get_provides(alpm_pkg_t *pkg) { (void)pkg; return NULL; }
 alpm_pkgreason_t alpm_pkg_get_reason(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->reason : ALPM_PKG_REASON_DEPEND; }
 alpm_pkgfrom_t alpm_pkg_get_origin(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->origin : ALPM_PKG_FROM_LOCALDB; }
 alpm_time_t alpm_pkg_get_builddate(alpm_pkg_t *pkg) { (void)pkg; return 0; }
