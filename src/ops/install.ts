@@ -102,7 +102,12 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
   const tx = createTransaction('install', info.name, info.version);
 
   if (!opts.noscriptlet && (install?.pre_install || install?.post_install)) {
-    const script = `pre_install() {\n${install.pre_install || ''}\n}\npost_install() {\n${install.post_install || ''}\n}\npre_remove() { ${install.pre_remove || ''} }\npost_remove() { ${install.post_remove || ''} }\n`;
+    const parts: string[] = [];
+    if (install.pre_install) parts.push(`pre_install() {\n${install.pre_install}\n}`);
+    if (install.post_install) parts.push(`post_install() {\n${install.post_install}\n}`);
+    if (install.pre_remove) parts.push(`pre_remove() {\n${install.pre_remove}\n}`);
+    if (install.post_remove) parts.push(`post_remove() {\n${install.post_remove}\n}`);
+    const script = parts.join('\n') + '\n';
     saveScript(info.name, '.INSTALL', script);
     const tmpScript = `/var/lib/pacman-debian/info/${info.name}/.INSTALL`;
     if (install?.pre_install) {
@@ -124,7 +129,7 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
   if (!opts.noscriptlet && install?.post_install) {
     const tmpScript = `/var/lib/pacman-debian/info/${info.name}/.INSTALL`;
     if (!fs.existsSync(tmpScript)) {
-      saveScript(info.name, '.INSTALL', `pre_install() { }\npost_install() {\n${install.post_install}\n}\npre_remove() { }\npost_remove() { }\n`);
+      saveScript(info.name, '.INSTALL', `post_install() {\n${install.post_install}\n}\n`);
     }
     try { execSync(`/bin/bash -c 'source "${tmpScript}" && post_install'`, { stdio: 'inherit' }); } catch {}
   }
