@@ -1,15 +1,15 @@
 {
   "name": "pacman-debian",
-  "version": "7.3.0",
+  "version": "7.3.1",
   "description": "A Debian/Ubuntu package manager using Arch Linux pacman syntax. Manages .deb packages at dpkg level, supports Arch .pkg.tar.zst, AUR helpers (yay), and makepkg. Configurable multi-repo setup.",
   "pacmanVersion": "7.1.0",
   "main": "dist/index.js",
   "bin": {
-    "pacman": "./dist/index.js",
-    "makepkg": "./dist/makepkg/index.js",
-    "pacman-conf": "./dist/scripts/pacman-conf.js",
-    "pacman-debian-setup": "./dist/scripts/setup.js",
-    "paclink": "./dist/cli/paclink.js"
+    "pacman": "dist/index.js",
+    "makepkg": "dist/makepkg/index.js",
+    "pacman-conf": "dist/scripts/pacman-conf.js",
+    "pacman-debian-setup": "dist/scripts/setup.js",
+    "paclink": "dist/cli/paclink.js"
   },
   "scripts": {
     "build": "tsc && make -s -C lib/pac4deb",
@@ -19,7 +19,15 @@
     "postinstall": "echo 'Run `sudo pacman-debian-setup` to complete installation.'",
     "prepublishOnly": "pnpm build"
   },
-  "keywords": ["pacman", "debian", "ubuntu", "package-manager", "arch", "aur", "makepkg"],
+  "keywords": [
+    "pacman",
+    "debian",
+    "ubuntu",
+    "package-manager",
+    "arch",
+    "aur",
+    "makepkg"
+  ],
   "author": "Xbodwf",
   "license": "GPL-3.0",
   "repository": {
@@ -34,7 +42,9 @@
   "engines": {
     "node": ">=18"
   },
-  "os": ["linux"],
+  "os": [
+    "linux"
+  ],
   "devDependencies": {
     "@types/node": "^25.9.3",
     "typescript": "^6.0.3"
