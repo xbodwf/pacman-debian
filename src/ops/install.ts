@@ -105,7 +105,9 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
     const script = `pre_install() {\n${install.pre_install}\n}\npost_install() { ${install.post_install || ''} }\npre_remove() { ${install.pre_remove || ''} }\npost_remove() { ${install.post_remove || ''} }\n`;
     saveScript(info.name, '.INSTALL', script);
     const tmpScript = `/var/lib/pacman-debian/info/${info.name}/.INSTALL`;
-    try { execSync(`/bin/bash -c 'source "${tmpScript}" && pre_install'`, { stdio: 'inherit' }); } catch {}
+    if (fs.existsSync(tmpScript)) {
+      try { execSync(`/bin/bash -c 'source "${tmpScript}" && pre_install'`, { stdio: 'inherit' }); } catch {}
+    }
   }
 
   const files: string[] = [];
@@ -121,7 +123,9 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
 
   if (!opts.noscriptlet && install?.post_install) {
     const tmpScript = `/var/lib/pacman-debian/info/${info.name}/.INSTALL`;
-    try { execSync(`/bin/bash -c 'source "${tmpScript}" && post_install'`, { stdio: 'inherit' }); } catch {}
+    if (fs.existsSync(tmpScript)) {
+      try { execSync(`/bin/bash -c 'source "${tmpScript}" && post_install'`, { stdio: 'inherit' }); } catch {}
+    }
   }
 
   // Run ldconfig if package installs shared libraries
@@ -396,7 +400,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
 
     let prevTime = Date.now(), prevBytes = 0, smoothRate = 0;
     const pname = p.package.length > nameMax ? p.package.slice(0, nameMax - 3) + '...' : p.package;
-    process.stdout.write(t('progress_downloading', String(i + 1), String(allPkgs.length), pname));
+    process.stdout.write(formatPfx(i + 1, allPkgs.length) + pname.padEnd(nameMax));
 
     const localPath = await downloadPkg(p, undefined, (rec, tot) => {
       const now = Date.now();
