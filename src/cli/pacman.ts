@@ -1,5 +1,5 @@
 import { installPkg, installPackages } from '../ops/install';
-import { removeByName } from '../ops/remove';
+import { removeByName, removePackages } from '../ops/remove';
 import { listInstalled, showInfo, queryFile, listFiles, listExplicit, listDeps, listOrphans, checkIntegrity } from '../ops/query';
 import { syncAndUpgrade, upgradeOnly } from '../ops/upgrade';
 import { syncRepos, searchRepo, findInRepo, downloadPkg, getPkgUrl, getRepoCache } from '../repo/repository';
@@ -257,7 +257,7 @@ export async function parseArgs(args: string[]): Promise<void> {
     const nosave = flags.includes('n');
     const doPrint = flags.includes('p');
     if (!doPrint) needRoot();
-    for (const n of targets) await removeByName(n, { recursive, cascade, nodeps, nosave, print: doPrint });
+    await removePackages(targets, { recursive, cascade, nodeps, nosave, print: doPrint });
     return;
   }
 
