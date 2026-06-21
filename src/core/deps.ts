@@ -83,7 +83,8 @@ function checkVersion(installed: string, operator: string, required: string): bo
 /* ---- Fast path: pre-load DBs once ---- */
 interface DepState {
   localPkgs: Map<string, string>;
-  localHasFiles: Set<string>;  // packages that have at least one file on disk
+  localHasFiles: Set<string>;
+  localLinks: Set<string>;  // link packages (virtual -> deb mappings)
   dpkgPkgs: Map<string, string>;
   repoCache: RepoPkg[] | null;
 }
@@ -102,8 +103,10 @@ function getState(): DepState {
   const local = loadDatabase();
   const localMap = new Map<string, string>();
   const localHasFiles = new Set<string>();
+  const localLinks = new Set<string>();
   for (const [n, p] of local.packages) {
     localMap.set(n, p.version);
+    if (p.repoType === 'link') { localLinks.add(n); continue; }
     if (!p.files || p.files.length === 0) continue;
     for (const f of p.files) {
       // Skip pure directory entries - only count real files
@@ -116,7 +119,7 @@ function getState(): DepState {
   const dpkgMap = new Map<string, string>();
   for (const [n, p] of dpkg) dpkgMap.set(n, p.version);
 
-  _state = { localPkgs: localMap, localHasFiles, dpkgPkgs: dpkgMap, repoCache: null };
+  _state = { localPkgs: localMap, localHasFiles, localLinks, dpkgPkgs: dpkgMap, repoCache: null };
   return _state;
 }
 
@@ -125,6 +128,14 @@ function isDepSatisfied(dep: Dep, state: DepState, upgradeMode = false): boolean
   // Check local pacman-debian DB first (with file existence verification)
   const localVer = state.localPkgs.get(dep.name);
   if (localVer) {
+    // Link packages (virtual -> deb mappings): if a real repo package exists,
+    // prefer the real package over the link.
+    if (state.localLinks.has(dep.name)) {
+      const rp = findInRepo(dep.name);
+      if (rp) return false; // real package available — install it, don't use link
+      if (dep.operator && dep.version) return checkVersion(localVer, dep.operator, dep.version);
+      return true;
+    }
     if (!state.localHasFiles.has(dep.name)) return false;
     if (dep.operator && dep.version) return checkVersion(localVer, dep.operator, dep.version);
     if (upgradeMode) {

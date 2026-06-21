@@ -1,0 +1,12 @@
+src/
+lib/
+tsconfig.json
+node_modules/
+*.ts
+*.tsbuildinfo
+.git/
+.gitignore
+*.o
+*.so
+*.swp
+.DS_Store
