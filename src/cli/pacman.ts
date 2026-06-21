@@ -162,13 +162,6 @@ export async function parseArgs(args: string[]): Promise<void> {
     checkDeps(rest);
     return;
   }
-  if (raw === '--sync-db') {
-    needRoot();
-    const { syncDpkgPackages } = require('../db/localdb');
-    const r = syncDpkgPackages();
-    console.log(`dpkg sync: ${r.added} added, ${r.removed} removed, ${r.skipped} unchanged`);
-    return;
-  }
 
   // Short-form
   if (!raw.startsWith('-')) { console.error(t_('error_unknown_operation', raw)); process.exit(1); }

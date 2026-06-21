@@ -215,15 +215,6 @@ async function main() {
   const localDir = path.join(PACMAN_DB_TARGET, 'local');
   if (!fs.existsSync(localDir)) fs.mkdirSync(localDir, { recursive: true });
 
-  // --- Sync dpkg packages into local db ---
-  try {
-    const { syncDpkgPackages } = require('../db/localdb');
-    const result = syncDpkgPackages();
-    console.log(`Synced dpkg packages: ${result.added} added, ${result.removed} removed, ${result.skipped} unchanged`);
-  } catch (e: any) {
-    console.error(t('error_prefix', e.message));
-  }
-
   // --- Global symlinks ---
   const projectDir = path.resolve(__dirname, '../..');
   const commands: [string, string][] = [
