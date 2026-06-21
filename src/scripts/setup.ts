@@ -215,6 +215,23 @@ async function main() {
   const localDir = path.join(PACMAN_DB_TARGET, 'local');
   if (!fs.existsSync(localDir)) fs.mkdirSync(localDir, { recursive: true });
 
+  // --- Arch-compat profile functions (append_path, etc.) ---
+  const profileCompat = '/etc/profile.d/append_path.sh';
+  if (!fs.existsSync(profileCompat)) {
+    fs.writeFileSync(profileCompat, [
+      'append_path() {',
+      '    case ":${PATH}:" in',
+      '        *:"$1":*) ;;',
+      '        *) PATH="${PATH:+$PATH:}$1" ;;',
+      '    esac',
+      '}',
+      'export PATH',
+      '',
+    ].join('\n'));
+    fs.chmodSync(profileCompat, 0o644);
+    console.log(`Created ${profileCompat}`);
+  }
+
   // --- Global symlinks ---
   const projectDir = path.resolve(__dirname, '../..');
   const commands: [string, string][] = [
