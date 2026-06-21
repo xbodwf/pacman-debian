@@ -91,6 +91,7 @@ function collectRemoveSet(target: string, opts: RemoveOptions, db: Database): st
     }
 
     // Phase 2: walk dependency tree, remove orphans
+    toRemove.add(target);
     for (let i = 0; i < queue.length; i++) {
       const name = queue[i];
       const pkg = getPackage(db, name);
@@ -233,5 +234,60 @@ export async function removeByName(name: string, opts: RemoveOptions = {}): Prom
   const result = removeSingle(name, opts);
   if (!result) return false;
   console.log(t('pkg_removed', name));
+  return true;
+}
+
+export async function removePackages(names: string[], opts: RemoveOptions = {}): Promise<boolean> {
+  initDb();
+  const db = loadDatabase();
+  const allToRemove = new Set<string>();
+
+  for (const name of names) {
+    const pkg = getPackage(db, name);
+    if (!pkg) { console.error(t('error_not_installed', name)); return false; }
+    const set = collectRemoveSet(name, opts, db);
+    for (const s of set) allToRemove.add(s);
+  }
+
+  const list = [...allToRemove];
+  if (list.length === 0) { console.error(t('error_no_targets')); return false; }
+
+  if (opts.print) {
+    for (const n of list) {
+      const p = getPackage(db, n);
+      if (p) console.log(t('would_remove', `${n}-${p.version}`));
+    }
+    return true;
+  }
+
+  // Dep check for simple remove (non-recursive, non-cascade)
+  if (!opts.nodeps && !opts.recursive && !opts.cascade) {
+    for (const name of names) {
+      if (isRequiredByOthers(name, new Set(names), db)) {
+        console.error(`error: failed to prepare transaction (could not satisfy dependencies)\n  :: ${name} is required by some other package`);
+        console.error('  (use -Rdd to skip this check, or -Rs to remove orphans)');
+        return false;
+      }
+    }
+  }
+
+  console.log(t('checking_deps_remove') + '\n');
+  console.log(`Packages (${list.length}): ${list.join('  ')}`);
+  console.log('');
+
+  if (!await confirm(':: Proceed with removal?', false)) return false;
+
+  for (let i = 0; i < list.length; i++) {
+    const n = list[i];
+    const p = getPackage(db, n);
+    if (!p) continue;
+    if (list.length > 1) {
+      const bar = '#'.repeat(Math.max(Math.floor(((process.stdout.columns || 80) - 45) * 0.35), 8));
+      process.stdout.write(`(${i + 1}/${list.length}) removing ${`${n}-${p.version}`.padEnd(Math.max(20, (process.stdout.columns || 80) - 60))}${bar} 100%\n`);
+    }
+    removeSingle(n, { ...opts, recursive: false, cascade: false, nodeps: true });
+  }
+
+  if (list.length === 1) console.log(t('pkg_removed', list[0]));
   return true;
 }
