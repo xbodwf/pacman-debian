@@ -558,9 +558,9 @@ sudo apt install golang-go
 git clone https://aur.archlinux.org/yay.git /tmp/yay
 cd /tmp/yay && go build -o /usr/local/bin/yay
 
-# Use with pacman-debian
-PACMAN=/usr/local/bin/pacman yay -Ss ponysay
-PACMAN=/usr/local/bin/pacman sudo -E yay -S ponysay
+# Use with pacman-debian (PACMAN env var detected automatically)
+yay -Ss ponysay
+sudo -E yay -S ponysay
 ```
 
 Note: AUR packages that depend on `python` (not `python3`) are unresolvable

@@ -539,9 +539,9 @@ sudo apt install golang-go
 git clone https://aur.archlinux.org/yay.git /tmp/yay
 cd /tmp/yay && go build -o /usr/local/bin/yay
 
-# 与 pacman-debian 配合使用
-PACMAN=/usr/local/bin/pacman yay -Ss ponysay
-PACMAN=/usr/local/bin/pacman sudo -E yay -S ponysay
+# 与 pacman-debian 配合使用（PACMAN 环境变量自动识别）
+yay -Ss ponysay
+sudo -E yay -S ponysay
 ```
 
 注意：依赖 `python`（而非 `python3`）的 AUR 包在 Debian 上无法解析，
