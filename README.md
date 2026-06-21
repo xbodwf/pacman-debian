@@ -563,9 +563,8 @@ yay -Ss ponysay
 sudo -E yay -S ponysay
 ```
 
-Note: AUR packages that depend on `python` (not `python3`) are unresolvable
-on Debian since the package is named `python3`. Install `python-is-python3`
-or create a symlink to work around this.
+Note: AUR packages that depend on `python` (not `python3`) are resolved
+automatically via paclink's `python → python3` mapping, created during setup.
 
 ## License
 
