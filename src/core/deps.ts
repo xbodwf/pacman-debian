@@ -133,6 +133,17 @@ function isDepSatisfied(dep: Dep, state: DepState, upgradeMode = false): boolean
     if (state.localLinks.has(dep.name)) {
       const rp = findInRepo(dep.name);
       if (rp) return false; // real package available — install it, don't use link
+      // Check if the real deb package is installed via dpkg
+      const local = loadDatabase();
+      const linkPkg = local.packages.get(dep.name);
+      if (linkPkg && linkPkg.depends) {
+        const debName = linkPkg.depends.split(',')[0].trim().split(/\s/)[0];
+        const debVer = state.dpkgPkgs.get(debName);
+        if (debVer) {
+          if (dep.operator && dep.version) return checkVersion(debVer, dep.operator, dep.version);
+          return true;
+        }
+      }
       if (dep.operator && dep.version) return checkVersion(localVer, dep.operator, dep.version);
       return true;
     }
@@ -159,12 +170,22 @@ function isDepSatisfied(dep: Dep, state: DepState, upgradeMode = false): boolean
 }
 
 /* ---- Find provider in repo (uses cached idx + provides index) ---- */
-function findProvider(name: string, _state: DepState): RepoPkg | undefined {
+function findProvider(name: string, state: DepState): RepoPkg | undefined {
   // Direct lookup via cached idx (binary search, no disk I/O)
   const direct = findInRepo(name);
   if (direct) return direct;
   // Provides lookup via inverted index (O(1) instead of O(N))
-  return findProvides(name);
+  const provided = findProvides(name);
+  if (provided) return provided;
+  // Paclink: virtual name → resolve to real deb package name
+  const local = loadDatabase();
+  const linkPkg = local.packages.get(name);
+  if (linkPkg && linkPkg.repoType === 'link' && linkPkg.depends) {
+    const debName = linkPkg.depends.split(',')[0].trim().split(/\s/)[0];
+    const debRp = findInRepo(debName);
+    if (debRp) return debRp;
+  }
+  return undefined;
 }
 
 /* ---- Full dependency resolution ---- */
