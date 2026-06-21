@@ -222,9 +222,16 @@ async function main() {
     ['makepkg', path.join(projectDir, 'dist', 'makepkg', 'index.js')],
     ['pacman-conf', path.join(projectDir, 'dist', 'scripts', 'pacman-conf.js')],
     ['paclink', path.join(projectDir, 'dist', 'cli', 'paclink.js')],
+    ['update-ca-trust', path.join(projectDir, 'dist', 'cli', 'update-ca-trust.js')],
+    ['archlinux-java', path.join(projectDir, 'dist', 'cli', 'archlinux-java.js')],
+    ['fix_default', path.join(projectDir, 'dist', 'cli', 'fix_default.js')],
   ];
 
   for (const [name, target] of commands) { await handleLink(`/usr/local/bin/${name}`, target); }
+
+  // Also link Arch-compat tools to /usr/bin/ for package install scripts
+  const archCompat = ['update-ca-trust', 'archlinux-java', 'fix_default'];
+  for (const name of archCompat) { await handleLink(`/usr/bin/${name}`, `/usr/local/bin/${name}`); }
 
   // --- Build and install libalpm ---
   const libDir = path.join(projectDir, 'lib', 'pac4deb');
