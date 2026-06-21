@@ -210,6 +210,16 @@ AUR 助手（如 yay）无需修改即可在 Debian 上运行。它读取：
   防止 `DB().Name()` 空指针崩溃。
 - **基于 idx 的搜索**：`alpm_db_search` 扫描索引行做模式匹配，而非加载全部包。
   6 仓库/15000 包的情况下 `-Ss` 约 1.5 秒。
+- **dpkg Provides 解析**：`load_dpkg_status` 读取 dpkg status 的 `Provides:` 字段，
+  使声明了虚拟包名的 Debian 包（如 `7zip` → `p7zip`）能被 yay 通过 `alpm_pkg_has_provide` 发现。
+- **本地 DB 后备搜索**：`alpm_find_dbs_satisfier` 在 sync DB 搜索失败后搜索本地数据库
+  （通过 `alpm_find_satisfier`），同时匹配包名和 provides——
+  使 yay 能通过 `libgnutls30t64` 的映射 provides 找到 `gnutls`。
+- **find_in_idx provides 扫描**：包名二分查找失败后扫描 `packages.idx` 的 provides 列，
+  匹配 sync DB 中的虚拟提供（如 Arch 仓库中 `libz.so` → `zlib`）。
+- **dpkg -S 后备**：对于找不到的 `lib*.so` SONAME，通过 `dpkg -S` 在运行时查归属。
+- **Debian alternatives**：加载本地 DB 时检测 `/etc/alternatives/` 中的
+  `sh`、`awk`、`vi`、`editor` 等，自动为归属包添加虚拟 provides。
 
 ## makepkg（`src/makepkg/`）
 
@@ -277,6 +287,8 @@ makepkg --syncdeps --install
 | `pacman -Rdd <pkg>` | 跳过依赖检查强制删除 |
 | `pacman -Rp <pkg>` | 打印将要删除的内容（干运行） |
 
+支持多目标（`pacman -R a b`）：所有目标合并显示后统一确认。
+
 ### 查询（-Q）
 
 | 命令 | 说明 |
@@ -311,6 +323,36 @@ makepkg --syncdeps --install
 | `pacman-conf` | 打印解析后的配置（类似 Arch 的 `pacman-conf`）。查看每个仓库的 Server URL、Type、Dist、Components。 |
 | `makepkg` | 从 PKGBUILD 文件构建 Arch Linux 包。支持 `--syncdeps`、`--install`、`--clean`、源码下载和 `.pkg.tar.zst` 创建。 |
 | `pacman-debian-setup` | 交互式安装：创建配置、Include 文件、符号链接（`/etc/pacman.conf`、`/usr/local/bin/pacman`）和虚拟 `pacman` dpkg 条目。 |
+| `paclink` | 管理持久化的 Debian→Arch 虚拟包名映射。链接存储在本地数据库中，仅对 pacman/libalpm 可见，dpkg 不可见。 |
+
+### paclink（链接管理）
+
+| 命令 | 说明 |
+|------|------|
+| `paclink -Ln <deb> <virt>` | 创建链接：Debian 包 `<deb>` 提供 Arch 虚拟名 `<virt>` |
+| `paclink -L` | 列出所有链接 |
+| `paclink -Ls <关键词>` | 搜索链接 |
+| `paclink -Li <虚拟名>` | 显示链接详情 |
+| `paclink -R <虚拟名>` | 删除链接（不影响 Debian 包） |
+
+示例：
+
+```bash
+# 映射 dash 提供 sh
+sudo paclink -Ln dash sh
+
+# 映射 python3 提供 python
+sudo paclink -Ln python3 python
+
+# 列出所有映射
+paclink -L
+
+# 搜索含 python 的链接
+paclink -Ls python
+```
+
+链接以 `repoType: link` 存储在本地 DB。当某仓库中存在与链接同名的真包时，
+真包优先，安装时自动移除链接。
 
 ### 全局参数
 
@@ -378,7 +420,9 @@ makepkg --syncdeps --install
 
 ```
 src/
-├── cli/pacman.ts       # CLI 参数解析和分发
+├── cli/
+│   ├── pacman.ts       # CLI 参数解析和分发
+│   └── paclink.ts      # 虚拟包链接管理
 ├── core/               # 包格式解析器、依赖引擎
 │   ├── ar.ts           # ar 归档解析器
 │   ├── tar.ts          # tar 提取器
@@ -477,6 +521,11 @@ make -C lib/pac4deb       # 构建 libalpm.so
   pacman（品红=仓库、绿=包名、红=错误）。
 - **权限分离**：查询命令（`-Q`、`-Ss`、`-Si`、`-Sp`、`-Rp`）无需 root。
   写操作需要 `sudo`。
+- **链接系统**（`paclink`）：Debian→Arch 虚拟包名映射以本地 DB 条目存储
+  （`repoType: link`）。仓库真包自动优先于链接，安装时覆盖。
+  链接仅对 pacman/libalpm 可见，dpkg 不可见。
+- **作用域 i18n**：每个工具（pacman、paclink、setup）首次使用时才加载自己的
+  翻译文件，减少冷启动开销。语言：en、zh-CN。
 
 主要限制：
 

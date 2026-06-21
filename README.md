@@ -205,6 +205,19 @@ Key implementation details:
   `alpm_pkg_get_db` returns it, preventing `DB().Name()` nil dereference.
 - **idx-based search**: `alpm_db_search` scans index lines for pattern matching
   instead of loading all packages. ~1.5s for -Ss with 6 repos / 15k packages.
+- **dpkg Provides parsing**: `load_dpkg_status` reads the `Provides:` field from
+  dpkg status, so Debian packages that declare virtual names (e.g. `7zip` → `p7zip`)
+  are discoverable by yay via `alpm_pkg_has_provide`.
+- **Local DB fallback**: `alpm_find_dbs_satisfier` searches the local database
+  (via `alpm_find_satisfier`) after sync DBs, matching both package names and
+  provides — yay can find `gnutls` via `libgnutls30t64`'s mapped provides.
+- **find_in_idx provides scan**: After binary search by package name fails,
+  scans the `provides` column of `packages.idx` so sync DB provides are matched
+  (e.g. `libz.so` → `zlib` in Arch repos).
+- **dpkg -S fallback**: For `lib*.so` SONAMEs not found anywhere, forks `dpkg -S`
+  to locate the owning Debian package at runtime.
+- **Debian alternatives**: at local DB load time, checks `/etc/alternatives/` for
+  `sh`, `awk`, `vi`, `editor` etc. and adds virtual provides to the owning package.
 
 ## makepkg (`src/makepkg/`)
 
@@ -273,9 +286,11 @@ Flags:
 | `pacman -Rn <pkg>` | Remove package and its config files (nosave) |
 | `pacman -Rns <pkg>` | Remove package, dependencies, config files |
 | `pacman -Rc <pkg>` | Cascade: remove packages that depend on the target |
-| `pacman -Rc <pkg>` | Cascade: remove packages that depend on the target |
 | `pacman -Rdd <pkg>` | Skip dependency checks during removal |
 | `pacman -Rp <pkg>` | Print what would be removed (dry-run) |
+
+Multiple targets (`pacman -R a b`): all targets are merged and displayed
+together, with a single confirmation prompt.
 
 ### Query (-Q)
 
@@ -309,6 +324,37 @@ Flags:
 | `pacman-conf` | Print parsed configuration (like Arch's `pacman-conf`). View resolved Server URLs, Type, Dist, Components for each repo. |
 | `makepkg` | Build Arch Linux packages from PKGBUILD files. Supports `--syncdeps`, `--install`, `--clean`, source download, and `.pkg.tar.zst` creation. |
 | `pacman-debian-setup` | Interactive setup: creates config, Include files, symlinks (`/etc/pacman.conf`, `/usr/local/bin/pacman`), and virtual `pacman` dpkg entry. |
+| `paclink` | Create/manage persistent Debian→Arch virtual package name mappings. Links are stored in the local DB and visible only to pacman/libalpm tools, not dpkg. |
+
+### paclink (Link Management)
+
+| Command | Description |
+|---------|-------------|
+| `paclink -Ln <deb> <virt>` | Create a link: Debian package `<deb>` provides Arch virtual name `<virt>` |
+| `paclink -L` | List all links |
+| `paclink -Ls <keyword>` | Search links by name or target |
+| `paclink -Li <virt>` | Show link details |
+| `paclink -R <virt>` | Remove a link (Debian package unaffected) |
+
+Examples:
+
+```bash
+# Map dash to provide sh
+sudo paclink -Ln dash sh
+
+# Map python3 to provide python
+sudo paclink -Ln python3 python
+
+# List all mappings
+paclink -L
+
+# Search for links matching 'python'
+paclink -Ls python
+```
+
+Links are created as local DB entries with `repoType: link`. When a real
+package from any repo shares the same name as a link, the real package takes
+precedence and the link is automatically removed during installation.
 
 ### Global Flags
 
@@ -350,7 +396,9 @@ The dependency resolver (`src/core/deps.ts`) handles:
 
 ```
 src/
-├── cli/pacman.ts       # CLI argument parsing and dispatch
+├── cli/
+│   ├── pacman.ts       # CLI argument parsing and dispatch
+│   └── paclink.ts      # Virtual package link management
 ├── core/               # Package format parsers, dependency engine
 │   ├── ar.ts           # ar archive parser
 │   ├── tar.ts          # tar extractor
@@ -445,6 +493,12 @@ day-to-day package management on Debian-based distributions. Key features:
   official pacman color scheme (magenta=repo, green=pkg, red=error).
 - **Root check**: Moved into CLI code — query commands (`-Q`, `-Ss`, `-Si`,
   `-Sp`, `-Rp`) work without root. Write operations require `sudo`.
+- **Link system** (`paclink`): Debian→Arch virtual package name mappings stored
+  as local DB entries (`repoType: link`). Real repo packages automatically
+  take precedence over links during install. Links are only visible to
+  pacman/libalpm, not dpkg.
+- **Scoped i18n**: Each tool (pacman, paclink, setup) loads its own translation
+  file at first use, reducing cold-start overhead. Languages: en, zh-CN.
 
 Key limitations:
 
