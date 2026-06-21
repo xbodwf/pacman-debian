@@ -3,13 +3,19 @@ import * as path from 'node:path';
 import type { InstalledPackage } from '../core/types';
 
 const LOCAL_DIR = '/var/lib/pacman-debian/local';
-const BYNAME_DIR = path.join(LOCAL_DIR, 'by-name');
+const BYNAME_DIR = '/var/lib/pacman-debian/by-name';
 const FILE_INDEX = '/var/lib/pacman-debian/file-index.json';
 const PKG_INDEX = '/var/lib/pacman-debian/local/index.json'; // name → dir
 
 function ensure(): void {
   if (!fs.existsSync(LOCAL_DIR)) fs.mkdirSync(LOCAL_DIR, { recursive: true });
   if (!fs.existsSync(BYNAME_DIR)) fs.mkdirSync(BYNAME_DIR, { recursive: true });
+  // Migrate old by-name from inside local/ to outside
+  const oldByname = path.join(LOCAL_DIR, 'by-name');
+  if (fs.existsSync(oldByname) && oldByname !== BYNAME_DIR) {
+    try { fs.rmSync(BYNAME_DIR, { recursive: true, force: true }); } catch {}
+    fs.renameSync(oldByname, BYNAME_DIR);
+  }
 }
 
 function pkgDir(pkg: InstalledPackage): string {
@@ -244,3 +250,43 @@ export function getFileOwner(filePath: string): string | undefined {
 }
 
 export function invalidateFileIndex(): void { _fileIndex = null; }
+
+/* ---- dpkg sync: diff-based sync for fastfetch detection ---- */
+
+export function syncDpkgPackages(): { added: number; removed: number; skipped: number } {
+  ensure();
+  const { readDpkgStatus } = require('./dpkg-compat');
+  const dpkgPkgs = readDpkgStatus() as Map<string, { package: string; version: string }>;
+
+  // 1. Build set of expected dir names from dpkg
+  const expected = new Set<string>();
+  for (const [name, dpkg] of dpkgPkgs) {
+    expected.add(`${name}-${dpkg.version}`);
+  }
+
+  let added = 0, removed = 0, skipped = 0;
+
+  // 2. Scan local dir: remove stale entries not in dpkg
+  for (const entry of fs.readdirSync(LOCAL_DIR)) {
+    if (entry === 'by-name' || entry === 'index.json' || entry.startsWith('.')) {
+      // Clean up stale by-name if it slipped into local/
+      if (entry === 'by-name') {
+        try { fs.rmSync(path.join(LOCAL_DIR, entry), { recursive: true, force: true }); } catch {}
+      }
+      continue;
+    }
+    if (expected.has(entry)) { skipped++; continue; }
+    fs.rmSync(path.join(LOCAL_DIR, entry), { recursive: true, force: true });
+    removed++;
+  }
+
+  // 3. Add new entries from dpkg that don't exist in local dir
+  for (const dirName of expected) {
+    const dir = path.join(LOCAL_DIR, dirName);
+    if (fs.existsSync(dir)) continue;
+    fs.mkdirSync(dir, { recursive: true });
+    added++;
+  }
+
+  return { added, removed, skipped };
+}

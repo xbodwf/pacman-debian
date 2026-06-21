@@ -11,6 +11,8 @@ const CONFIG_DIR = '/etc/pacman-debian';
 const CONFIG_PATH = path.join(CONFIG_DIR, 'pacman.conf');
 const SYMLINK_PATH = '/etc/pacman';
 const DPKG_STATUS = '/var/lib/dpkg/status';
+const PACMAN_DB_SYMLINK = '/var/lib/pacman';
+const PACMAN_DB_TARGET = '/var/lib/pacman-debian';
 
 function getPacmanVersion(): string {
   const pkgPath = path.resolve(__dirname, '../../package.json');
@@ -178,6 +180,48 @@ async function main() {
     }
   } else {
     console.log(t('setup_config_exists', CONFIG_PATH));
+  }
+
+  // --- Symlink /var/lib/pacman -> /var/lib/pacman-debian ---
+  if (!fs.existsSync(PACMAN_DB_SYMLINK)) {
+    try {
+      fs.symlinkSync(PACMAN_DB_TARGET, PACMAN_DB_SYMLINK);
+      console.log(t('setup_symlink_created', PACMAN_DB_SYMLINK, PACMAN_DB_TARGET));
+    } catch (e: any) {
+      console.error(t('error_prefix', e.message));
+    }
+  } else {
+    try {
+      const stat = fs.lstatSync(PACMAN_DB_SYMLINK);
+      if (stat.isSymbolicLink()) {
+        const existing = fs.readlinkSync(PACMAN_DB_SYMLINK);
+        if (existing !== PACMAN_DB_TARGET) {
+          console.log(t('setup_symlink_wrong_target', PACMAN_DB_SYMLINK, existing, PACMAN_DB_TARGET));
+          fs.unlinkSync(PACMAN_DB_SYMLINK);
+          fs.symlinkSync(PACMAN_DB_TARGET, PACMAN_DB_SYMLINK);
+          console.log(t('setup_symlink_created', PACMAN_DB_SYMLINK, PACMAN_DB_TARGET));
+        } else {
+          console.log(t('setup_symlink_exists', PACMAN_DB_SYMLINK));
+        }
+      } else {
+        console.log(t('setup_symlink_not_symlink', PACMAN_DB_SYMLINK));
+      }
+    } catch (e: any) {
+      console.error(t('error_prefix', e.message));
+    }
+  }
+
+  // Ensure /var/lib/pacman-debian/local exists for fastfetch detection
+  const localDir = path.join(PACMAN_DB_TARGET, 'local');
+  if (!fs.existsSync(localDir)) fs.mkdirSync(localDir, { recursive: true });
+
+  // --- Sync dpkg packages into local db ---
+  try {
+    const { syncDpkgPackages } = require('../db/localdb');
+    const result = syncDpkgPackages();
+    console.log(`Synced dpkg packages: ${result.added} added, ${result.removed} removed, ${result.skipped} unchanged`);
+  } catch (e: any) {
+    console.error(t('error_prefix', e.message));
   }
 
   // --- Global symlinks ---
