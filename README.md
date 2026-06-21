@@ -5,7 +5,9 @@ operating directly on Debian/Ubuntu `.deb` packages. It manages packages at the
 dpkg level — bypassing APT — and also supports native Arch Linux `.pkg.tar.zst`
 packages (including AUR compatibility via yay with a bundled libalpm).
 
-## Goals
+## Introduction
+
+### Goals
 
 - Provide a consistent, pacman-style CLI for package management on Debian-based
   systems, eliminating the conceptual overhead of switching between `apt`,
@@ -17,40 +19,95 @@ packages (including AUR compatibility via yay with a bundled libalpm).
 - Provide a libalpm ABI-compatible shared library so that Go-based AUR helpers
   (yay) can work on Debian without modification.
 
-## Requirements
+### Project Status
+
+This project was renamed to `pacman-debian` at v7.1.0. It is functional for
+day-to-day package management on Debian-based distributions. Key features:
+
+- **Performance**: `packages.idx` index enables sub-second single-package
+  lookup. `-Ss` scans index only (no JSON parsing). Full `-Sl` uses index
+  seek. ~64k packages across all repos, cached.
+- **Parallel sync**: Repos sync concurrently with per-repo progress display.
+  HTTP conditional requests (304) skip unchanged repos.
+- **i18n**: Full Chinese and English localization via `$LANG` detection.
+  Controlled by JSON message catalogs at `src/i18n/`.
+- **Color**: Respects `Color` option in `pacman.conf [options]`. Matching
+  official pacman color scheme (magenta=repo, green=pkg, red=error).
+- **Root check**: Moved into CLI code — query commands (`-Q`, `-Ss`, `-Si`,
+  `-Sp`, `-Rp`) work without root. Write operations require `sudo`.
+- **Link system** (`paclink`): Debian→Arch virtual package name mappings stored
+  as local DB entries (`repoType: link`). Real repo packages automatically
+  take precedence over links during install. Links are only visible to
+  pacman/libalpm, not dpkg.
+- **Scoped i18n**: Each tool (pacman, paclink, setup) loads its own translation
+  file at first use, reducing cold-start overhead. Languages: en, zh-CN.
+
+Key limitations:
+
+- **Arch ARM binary repos require glibc 2.38+** — Debian 12 ships 2.36.
+  Local `makepkg` builds work fine.
+- **yay/AUR**: libalpm stub library enables package search and dependency
+  resolution, but complex AUR dependency chains may fail due to Debian/Arch
+  package naming differences.
+- **No AUR helper integration** beyond yay (paru, pamac, etc. untested).
+
+## Installation
+
+### Requirements
 
 - Node.js 18+ (TypeScript, compiled with `tsc`)
-- pnpm package manager
 - Debian-based distribution (Debian, Ubuntu, Armbian, Linux Mint, etc.)
 - Root privileges for install, remove, and upgrade operations
-- Build essentials: `gcc`, `make`, `ldconfig`
+- Build essentials: `gcc`, `make`, `ldconfig` (for libalpm C library)
 
-## Quick Start
+### Quick Install (npm)
 
 ```bash
-# Build TypeScript + C library
-pnpm install && pnpm build
+npm install -g pacman-debian@latest
+sudo $(which pacman-debian-setup)
+```
 
-# Run interactive setup (creates config, symlinks, dpkg entry)
+> [!WARNING]
+> If you install pacman-debian outside of sudo/su (i.e. as a regular user with
+> `npm install -g`), you acknowledge that pacman-debian and its associated
+> scripts may be subject to unauthorized modification or compromise.
+
+The setup script will:
+1. Create `/etc/pacman-debian/pacman.conf` with default settings
+2. Create `/etc/pacman.conf` → `/etc/pacman-debian/pacman.conf` symlink
+3. Create all CLI symlinks (`/usr/local/bin/pacman`, etc.)
+4. Set up `/var/lib/pacman` → `/var/lib/pacman-debian` symlink for fastfetch detection
+5. Install Arch-compat helper tools (`update-ca-trust`, `archlinux-java`, `fix_default`)
+6. Install Arch-compat shell functions (`/etc/profile.d/append_path.sh`)
+7. Register a virtual `pacman` package in dpkg status
+8. Create default paclink mappings (sh → bash, python → python3, etc.)
+
+After setup, sync repositories and start using pacman:
+
+```bash
+sudo pacman -Sy
+sudo pacman -S neofetch
+```
+
+### Development Install
+
+```bash
+git clone https://github.com/Xbodwf/pacman-debian.git
+cd pacman-debian
+pnpm install
+pnpm build                # tsc + C library
+# Or step by step:
+pnpm exec tsc
+make -C lib/pac4deb       # Build libalpm.so
+
+# Run setup
 sudo node dist/scripts/setup.js
 
-# Alternatively, set up manually:
+# Or set up manually:
 sudo ln -sf "$PWD/dist/cli/pacman.js" /usr/local/bin/pacman
-
-# Sync repositories
-sudo pacman -Sy
-
-# Search packages
-pacman -Ss neofetch
-
-# Install
-sudo pacman -S neofetch
-
-# Upgrade all packages
-sudo pacman -Syu
-
-# Remove
-sudo pacman -R neofetch
+sudo ln -sf "$PWD/dist/cli/paclink.js" /usr/local/bin/paclink
+sudo ln -sf "$PWD/dist/scripts/pacman-conf.js" /usr/local/bin/pacman-conf
+sudo ln -sf "$PWD/dist/makepkg/index.js" /usr/local/bin/makepkg
 ```
 
 ## Configuration
@@ -115,9 +172,73 @@ Type = arch
 Architecture = auto
 ```
 
-## Database
+### Config Options
 
-### Local database: `/var/lib/pacman-debian/local/`
+| Option | Description |
+|--------|-------------|
+| `Color` | Enable colored output (in `[options]` section) |
+| `Architecture` | Set target architecture (default: `auto`) |
+| `IgnorePkg` | Skip upgrade for specified packages |
+
+## Architecture
+
+### Source Tree
+
+```
+src/
+├── cli/
+│   ├── pacman.ts            # CLI argument parsing and dispatch
+│   ├── paclink.ts           # Virtual package link management
+│   ├── update-ca-trust.ts   # Arch-compat CA certificate updater
+│   ├── archlinux-java.ts    # Arch-compat Java alternatives manager
+│   └── fix_default.ts       # Arch-compat default JDK helper
+├── core/                    # Package format parsers, dependency engine
+│   ├── ar.ts                # ar archive parser
+│   ├── tar.ts               # tar extractor
+│   ├── deb.ts               # .deb package parser
+│   ├── pkgfile.ts           # .pkg.tar.zst parser
+│   ├── compress.ts          # gz/xz decompression
+│   ├── control.ts           # debian control file parser
+│   └── deps.ts              # Dependency resolution engine
+├── db/
+│   ├── localdb.ts           # Directory-based local package DB
+│   ├── database.ts          # DB wrapper with transactions
+│   └── dpkg-compat.ts       # dpkg status file read/write
+├── ops/
+│   ├── install.ts           # Package installation
+│   ├── remove.ts            # Package removal
+│   ├── query.ts             # All -Q queries
+│   └── upgrade.ts           # Sync + upgrade flow
+├── repo/
+│   ├── repository.ts        # Repo sync, download, JSONL cache
+│   └── config.ts            # pacman.conf parser with Include support
+├── scripts/
+│   └── setup.ts             # Interactive setup script
+├── makepkg/
+│   ├── index.ts             # Main makepkg entry
+│   ├── pkgbuild.ts          # PKGBUILD parser
+│   ├── source.ts            # Source download/extraction
+│   ├── build.ts             # build()/package() execution
+│   └── printsrcinfo.ts      # .SRCINFO generation
+├── ui/                      # User interface (prompt, formatting)
+└── index.ts                 # Entry point
+```
+
+```
+lib/pac4deb/                 # libalpm C library
+├── Makefile                 # Build with gcc, target libalpm.so
+├── include/
+│   ├── alpm.h               # Public libalpm API header
+│   └── alpm_list.h          # Linked list header
+└── src/
+    ├── libalpm.c            # Core implementation (handle, db, pkg, JSON parser)
+    ├── stubs_manual.c       # ~200 stubs for rarely-used libalpm functions
+    └── alpm_list.c          # Linked list implementation
+```
+
+### Database
+
+#### Local database: `/var/lib/pacman-debian/local/`
 
 Uses a directory-per-package format matching Arch Linux's local DB:
 
@@ -137,14 +258,14 @@ A flat `index.json` file maps package names to their directories (one `name:base
 per line). This is the primary lookup path for removals and queries, and is
 automatically rebuilt from the filesystem if missing or corrupted.
 
-### dpkg compatibility
+#### dpkg compatibility
 
 Packages installed via `dpkg` or `apt` are read directly from
 `/var/lib/dpkg/status` at query time (mtime-cached). When `pacman-debian`
 installs a package, it writes a dpkg-compatible entry ensuring `apt` and `dpkg`
 still see the package.
 
-### Repository cache: `/var/cache/pacman-debian/packages/`
+#### Repository cache: `/var/cache/pacman-debian/packages/`
 
 Each repository is cached in JSON Lines chunks (5000 packages per `.jsonl`
 file). During sync, a `packages.idx` index is also built — one line per
@@ -159,6 +280,21 @@ package, sorted globally, with format `pkgname description\tprovides\tchunk\toff
 └── ...
 ```
 
+#### Memory Index Cache
+
+`packages.idx` is cached in memory after first read, keyed by repo name + mtime:
+
+```
+_idxCache = new Map<string, IdxEntry>();
+IdxEntry { lines: string[], mtime: number, providesIndex: Map<string, Array<{chunkFile, offset}>> }
+```
+
+- Subsequent `-S`/`-Ss`/`-Sl` operations read from memory, no disk I/O
+- `providesIndex` is an inverted index: `provides name → [{ chunkFile, offset }]`
+  - `findProvider()` does O(1) `Map.get()` for provides lookups
+- `pacman -Syy` clears the cache (`invalidateIdxCache()`)
+- After incremental sync, idx file mtime changes → auto reload
+
 **Lookup paths:**
 
 | Operation | Method | Why |
@@ -169,7 +305,7 @@ package, sorted globally, with format `pkgname description\tprovides\tchunk\toff
 | Dependency provides | Scan `packages.idx` provides field | Index-only, no JSON parse |
 | `-Qi` / `-Ql` | dpkg status or localdb | No cache involved |
 
-## Repository Support
+### Repository Support
 
 - **Debian/Ubuntu**: Reads `Packages.gz` / `Packages.xz` from standard
   repository indices. Supports `$repo`/`$arch` variable substitution in
@@ -181,7 +317,7 @@ package, sorted globally, with format `pkgname description\tprovides\tchunk\toff
   **unusable** without a glibc upgrade (which will likely break the system).
   Use `makepkg` for local builds instead.
 
-## libalpm (libpac4deb)
+### libalpm C Library (libpac4deb)
 
 A C library at `lib/pac4deb/` that implements the libalpm ABI (`alpm.h`),
 allowing Go-based AUR helpers like `yay` to work on Debian without
@@ -219,7 +355,52 @@ Key implementation details:
 - **Debian alternatives**: at local DB load time, checks `/etc/alternatives/` for
   `sh`, `awk`, `vi`, `editor` etc. and adds virtual provides to the owning package.
 
-## makepkg (`src/makepkg/`)
+### Dependency Engine
+
+The dependency resolver (`src/core/deps.ts`) handles:
+
+- Package name parsing with version constraints (`>=`, `<=`, `=`)
+- OR dependencies (`|`)
+- Architecture qualifiers (e.g. `:arm64`, `:amd64`)
+- Both Debian (comma-separated) and Arch (space-separated) formats
+- BFS resolution with pre-loaded DB state
+- Conflict detection across installed and to-be-installed packages
+- System package protection (glibc, libc6, etc.)
+
+- File validation: installed packages with no real files on disk (empty
+  directories only) are considered NOT installed, forcing re-download.
+- Explicit targets always have their dependencies processed even if the
+  target itself is already installed.
+- Queue uses `shift()` to pop processed items, preventing memory accumulation.
+
+#### Performance Optimizations
+
+| Technique | Description |
+|-----------|-------------|
+| **idx memory cache** | `findInRepo()` binary search on `_idxCache.lines[]` in memory, no file read (`src/repo/repository.ts:58`) |
+| **provides inverted index** | `providesIndex` built at idx load time, `findProvider()` does `Map.get()` O(1) (`src/repo/repository.ts:69`) |
+| **BFS + cursor** | Dependency queue uses index pointer instead of `shift()` to avoid array collapse overhead (`src/core/deps.ts:74`) |
+| **resolved set dedup** | `Set<string>` prevents re-resolving the same dependency (`src/core/deps.ts:73`) |
+| **batch head-tail scan** | `batchFindInRepo()` binary searches sorted idx from both ends simultaneously (`src/repo/repository.ts`) |
+| **keep-alive HTTP** | Shared `https.Agent({ keepAlive: true, maxSockets: 8 })`, reuses TCP/TLS connections (`src/repo/repository.ts:22`) |
+| **async .gz decompress** | `decompressAsync()` uses `zlib.gunzip()` callback, non-blocking (`src/core/compress.ts:9`) |
+| **304 conditional requests** | Sync sends `If-Modified-Since`, server returns 304 → skip (`src/repo/repository.ts:96`) |
+
+#### Delete Dependency Handling (`src/ops/remove.ts`)
+
+| Operation | Logic |
+|-----------|-------|
+| `-R` | Remove specified package only, no dep handling |
+| `-Rs` | Remove package + recursive orphan find (not RequiredBy any other pkg), reverse-topological order |
+| `-Rc` | Cascade: find all packages that "require" the target, remove together |
+| `-Rsc` | Recursive + cascade combination |
+| `-Rn` | Backup conffiles from `/var/lib/dpkg/info/<pkg>.conffiles` as `.dpkg-old`, then remove |
+
+Removal auto-sorts: dependents first (leaves before roots), so dependency
+checks don't error. `isRequiredByOthers()` scans all installed packages'
+`Depends` fields to determine if the target is needed.
+
+### makepkg (`src/makepkg/`)
 
 A standalone `makepkg` implementation that builds Arch Linux packages from
 PKGBUILDs without requiring `base-devel` or any Arch tools.
@@ -245,8 +426,6 @@ Features:
   through pacman-debian's sync databases (Debian and Arch repos)
 - Supports `--install` (`-i`), `--clean` (`-c`), `--rmdeps`
 
-Flags:
-
 | Flag | Description |
 |------|-------------|
 | `-s, --syncdeps` | Install missing dependencies via pacman |
@@ -258,9 +437,9 @@ Flags:
 | `--nocolor` | Disable colored output |
 | `--printsrcinfo` | Print `.SRCINFO` and exit |
 
-## Commands
+### Commands
 
-### Sync (-S)
+#### Sync (-S)
 
 | Command | Description |
 |---------|-------------|
@@ -277,7 +456,7 @@ Flags:
 | `pacman -Scc` | Remove all cached packages (including repos) |
 | `pacman -Sp <pkg>` | Print what would be installed (dry-run) |
 
-### Remove (-R)
+#### Remove (-R)
 
 | Command | Description |
 |---------|-------------|
@@ -292,7 +471,7 @@ Flags:
 Multiple targets (`pacman -R a b`): all targets are merged and displayed
 together, with a single confirmation prompt.
 
-### Query (-Q)
+#### Query (-Q)
 
 | Command | Description |
 |---------|-------------|
@@ -306,7 +485,7 @@ together, with a single confirmation prompt.
 | `pacman -Qs <keyword>` | Search installed packages |
 | `pacman -Qk [pkg]` | Verify installed package file integrity |
 
-### Other
+#### Other
 
 | Command | Description |
 |---------|-------------|
@@ -317,7 +496,7 @@ together, with a single confirmation prompt.
 | `pacman -F <file>` | Search which package provides a file |
 | `pacman -V` | Show version |
 
-### Bundled Tools
+#### Bundled Tools
 
 | Command | Description |
 |---------|-------------|
@@ -325,8 +504,11 @@ together, with a single confirmation prompt.
 | `makepkg` | Build Arch Linux packages from PKGBUILD files. Supports `--syncdeps`, `--install`, `--clean`, source download, and `.pkg.tar.zst` creation. |
 | `pacman-debian-setup` | Interactive setup: creates config, Include files, symlinks (`/etc/pacman.conf`, `/usr/local/bin/pacman`), and virtual `pacman` dpkg entry. |
 | `paclink` | Create/manage persistent Debian→Arch virtual package name mappings. Links are stored in the local DB and visible only to pacman/libalpm tools, not dpkg. |
+| `update-ca-trust` | Arch-compatible CA certificate updater (wraps Debian's `update-ca-certificates`) |
+| `archlinux-java` | Java environment manager: `status`, `get`, `set`, `unset`, `fix` (wraps `update-alternatives`) |
+| `fix_default` | Print current default JDK short name (used by Arch Java package install scripts) |
 
-### paclink (Link Management)
+#### paclink (Link Management)
 
 | Command | Description |
 |---------|-------------|
@@ -356,7 +538,7 @@ Links are created as local DB entries with `repoType: link`. When a real
 package from any repo shares the same name as a link, the real package takes
 precedence and the link is automatically removed during installation.
 
-### Global Flags
+#### Global Flags
 
 | Flag | Description |
 |------|-------------|
@@ -366,89 +548,7 @@ precedence and the link is automatically removed during installation.
 | `--noscriptlet` | Do not execute install scripts |
 | `--print` | Dry-run: show what would be done without executing |
 
-### Config Options
-
-| Option | Description |
-|--------|-------------|
-| `Color` | Enable colored output (in `[options]` section) |
-| `Architecture` | Set target architecture (default: `auto`) |
-| `IgnorePkg` | Skip upgrade for specified packages |
-
-## Dependency Engine
-
-The dependency resolver (`src/core/deps.ts`) handles:
-
-- Package name parsing with version constraints (`>=`, `<=`, `=`)
-- OR dependencies (`|`)
-- Architecture qualifiers (e.g. `:arm64`, `:amd64`)
-- Both Debian (comma-separated) and Arch (space-separated) formats
-- BFS resolution with pre-loaded DB state
-- Conflict detection across installed and to-be-installed packages
-- System package protection (glibc, libc6, etc.)
-
-- File validation: installed packages with no real files on disk (empty
-  directories only) are considered NOT installed, forcing re-download.
-- Explicit targets always have their dependencies processed even if the
-  target itself is already installed.
-- Queue uses `shift()` to pop processed items, preventing memory accumulation.
-
-## Architecture
-
-```
-src/
-├── cli/
-│   ├── pacman.ts       # CLI argument parsing and dispatch
-│   └── paclink.ts      # Virtual package link management
-├── core/               # Package format parsers, dependency engine
-│   ├── ar.ts           # ar archive parser
-│   ├── tar.ts          # tar extractor
-│   ├── deb.ts          # .deb package parser
-│   ├── pkgfile.ts      # .pkg.tar.zst parser
-│   ├── compress.ts     # gz/xz decompression
-│   ├── control.ts      # debian control file parser
-│   └── deps.ts         # Dependency resolution engine
-├── db/
-│   ├── localdb.ts      # Directory-based local package DB
-│   ├── database.ts     # DB wrapper with transactions
-│   └── dpkg-compat.ts  # dpkg status file read/write
-├── ops/
-│   ├── install.ts      # Package installation
-│   ├── remove.ts       # Package removal
-│   ├── query.ts        # All -Q queries
-│   └── upgrade.ts      # Sync + upgrade flow
-├── repo/
-│   ├── repository.ts   # Repo sync, download, JSONL cache
-│   └── config.ts       # pacman.conf parser with Include support
-├── scripts/
-│   └── setup.ts        # Interactive setup script
-├── makepkg/
-│   ├── index.ts        # Main makepkg entry
-│   ├── pkgbuild.ts     # PKGBUILD parser
-│   ├── source.ts       # Source download/extraction
-│   ├── build.ts        # build()/package() execution
-│   └── printsrcinfo.ts # .SRCINFO generation
-├── ui/                 # User interface (prompt, formatting)
-└── index.ts            # Entry point
-```
-
-## libalpm C Library
-
-```
-lib/pac4deb/
-├── Makefile            # Build with gcc, target libalpm.so
-├── include/
-│   ├── alpm.h          # Public libalpm API header
-│   └── alpm_list.h     # Linked list header
-└── src/
-    ├── libalpm.c       # Core implementation (handle, db, pkg, JSON parser)
-    ├── stubs_manual.c  # ~200 stubs for rarely-used libalpm functions
-    └── alpm_list.c     # Linked list implementation
-```
-
-Build with: `make -C lib/pac4deb`
-Install with: `sudo make -C lib/pac4deb install`
-
-## yay / AUR Support
+### yay / AUR Support
 
 `yay` works with `pacman-debian` through the bundled libalpm:
 
@@ -466,48 +566,6 @@ PACMAN=/usr/local/bin/pacman sudo -E yay -S ponysay
 Note: AUR packages that depend on `python` (not `python3`) are unresolvable
 on Debian since the package is named `python3`. Install `python-is-python3`
 or create a symlink to work around this.
-
-## Build
-
-```bash
-pnpm install
-pnpm build                # tsc + C library
-# Or step by step:
-pnpm exec tsc
-make -C lib/pac4deb       # Build libalpm.so
-```
-
-## Project Status
-
-This project was renamed to `pacman-debian` at v7.1.0. It is functional for
-day-to-day package management on Debian-based distributions. Key features:
-
-- **Performance**: `packages.idx` index enables sub-second single-package
-  lookup. `-Ss` scans index only (no JSON parsing). Full `-Sl` uses index
-  seek. ~64k packages across all repos, cached.
-- **Parallel sync**: Repos sync concurrently with per-repo progress display.
-  HTTP conditional requests (304) skip unchanged repos.
-- **i18n**: Full Chinese and English localization via `$LANG` detection.
-  Controlled by JSON message catalogs at `src/i18n/`.
-- **Color**: Respects `Color` option in `pacman.conf [options]`. Matching
-  official pacman color scheme (magenta=repo, green=pkg, red=error).
-- **Root check**: Moved into CLI code — query commands (`-Q`, `-Ss`, `-Si`,
-  `-Sp`, `-Rp`) work without root. Write operations require `sudo`.
-- **Link system** (`paclink`): Debian→Arch virtual package name mappings stored
-  as local DB entries (`repoType: link`). Real repo packages automatically
-  take precedence over links during install. Links are only visible to
-  pacman/libalpm, not dpkg.
-- **Scoped i18n**: Each tool (pacman, paclink, setup) loads its own translation
-  file at first use, reducing cold-start overhead. Languages: en, zh-CN.
-
-Key limitations:
-
-- **Arch ARM binary repos require glibc 2.38+** — Debian 12 ships 2.36.
-  Local `makepkg` builds work fine.
-- **yay/AUR**: libalpm stub library enables package search and dependency
-  resolution, but complex AUR dependency chains may fail due to Debian/Arch
-  package naming differences.
-- **No AUR helper integration** beyond yay (paru, pamac, etc. untested).
 
 ## License
 
