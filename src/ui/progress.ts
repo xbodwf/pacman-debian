@@ -8,8 +8,8 @@ export function humanSize(n: number, dec: number): { val: string; unit: string }
   return { val: v.toFixed(dec), unit: u };
 }
 
-export function drawProgressBar(pct: number, cols: number): string {
-  const barLen = Math.max(Math.floor((cols - 55) * 0.35), 8);
+export function drawProgressBar(pct: number, width: number): string {
+  const barLen = Math.max(width, 5);
   const hashes = Math.round(pct / 100 * barLen);
   return '#'.repeat(hashes) + '-'.repeat(Math.max(barLen - hashes, 0));
 }
