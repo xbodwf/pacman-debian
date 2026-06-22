@@ -1,5 +1,4 @@
 src/
-lib/
 tsconfig.json
 node_modules/
 *.ts

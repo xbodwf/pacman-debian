@@ -21,6 +21,7 @@ alpm_list_t *alpm_list_add_sorted(alpm_list_t *list, void *data, alpm_list_fn_cm
 void alpm_list_free(alpm_list_t *list);
 void alpm_list_free_inner(alpm_list_t *list, alpm_list_fn_free fn);
 alpm_list_t *alpm_list_remove(alpm_list_t *list, const void *needle, alpm_list_fn_cmp fn, void **data);
+alpm_list_t *alpm_list_remove_item(alpm_list_t *list, alpm_list_t *item);
 alpm_list_t *alpm_list_remove_str(alpm_list_t *list, const char *needle, char **data);
 alpm_list_t *alpm_list_strdup(alpm_list_t *list);
 int alpm_list_count(const alpm_list_t *list);

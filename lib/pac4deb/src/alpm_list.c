@@ -109,3 +109,12 @@ alpm_list_t *alpm_list_remove(alpm_list_t *list, const void *needle,
 	}
 	return list;
 }
+
+alpm_list_t *alpm_list_remove_item(alpm_list_t *list, alpm_list_t *item) {
+	if (item->prev) item->prev->next = item->next;
+	if (item->next) item->next->prev = item->prev;
+	if (list == item) list = item->next;
+	item->prev = NULL;
+	item->next = NULL;
+	return list;
+}
