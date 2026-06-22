@@ -15,9 +15,9 @@ export function drawProgressBar(pct: number, width: number): string {
 }
 
 export function formatRate(rate: number): string {
-  if (rate < 9.995) { const s = humanSize(rate, 2); return `${s.val.padStart(4)} ${s.unit}/s`; }
-  if (rate < 99.95) { const s = humanSize(rate, 1); return `${s.val.padStart(4)} ${s.unit}/s`; }
-  const s = humanSize(rate, 0); return `${s.val.padStart(4)} ${s.unit}/s`;
+  if (rate < 9.995) { const s = humanSize(rate, 2); return `${s.val.padStart(4)} ${s.unit}/s`.padStart(12); }
+  if (rate < 99.95) { const s = humanSize(rate, 1); return `${s.val.padStart(4)} ${s.unit}/s`.padStart(12); }
+  const s = humanSize(rate, 0); return `${s.val.padStart(4)} ${s.unit}/s`.padStart(12);
 }
 
 export function formatETA(eta: number): string {
