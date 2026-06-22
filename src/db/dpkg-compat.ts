@@ -105,10 +105,27 @@ export function writeDpkgEntry(pkg: InstalledPackage): void {
 
   if (fs.existsSync(DPKG_INFO)) {
     const lp = `${DPKG_INFO}/${pkg.name}.list`;
+    const files = pkg.files.length > 0
+      ? pkg.files
+      : (
+          pkg.depends && /^[a-z]/.test(pkg.depends)
+            ? loadFilesFromDpkg(pkg.depends.split(',')[0].trim().split(/\s/)[0])
+            : []
+        );
     const existing = fs.existsSync(lp)
       ? fs.readFileSync(lp, 'utf8').split('\n').filter(Boolean)
       : [];
-    fs.writeFileSync(lp, [...new Set([...existing, ...pkg.files])].sort().join('\n') + '\n');
+    fs.writeFileSync(lp, [...new Set([...existing, ...files])].sort().join('\n') + '\n');
+  }
+}
+
+function loadFilesFromDpkg(name: string): string[] {
+  try {
+    const { execSync } = require('node:child_process');
+    const out = execSync(`dpkg -L ${name} 2>/dev/null`, { encoding: 'utf8', timeout: 5000 });
+    return out.trim().split('\n').filter(Boolean);
+  } catch {
+    return [];
   }
 }
 
