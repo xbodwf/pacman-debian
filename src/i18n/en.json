@@ -20,6 +20,8 @@
   "error_unknown_operation_short": "error: unknown operation '-{0}'",
   "search_result_line": "{0}/{1} {2}",
   "search_result_desc": "    {0}",
+  "search_result_installed": " [{0}: {1}]",
+  "installed": "installed",
   "search_more_results": "... and {0} more",
   "no_pkg_found_matching": "no packages found matching '{0}'",
   "pkg_up_to_date": "{0} is up to date",

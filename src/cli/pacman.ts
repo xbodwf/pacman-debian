@@ -187,9 +187,12 @@ export async function parseArgs(args: string[]): Promise<void> {
       if (rest.length === 0) { console.error(t_('error_no_search_term')); return; }
       const results = searchRepo(rest[0]);
       if (results.length === 0) { console.log(t_('no_pkg_found_matching', rest[0])); return; }
+      const dpkg = readDpkgStatus();
       for (let i = 0; i < Math.min(results.length, 50); i++) {
         const p = results[i];
-        console.log(t_('search_result_line', p.repo, p.package, p.version));
+        const inst = dpkg.get(p.package);
+        const tag = inst ? t_('search_result_installed', t_('installed'), inst.version) : '';
+        console.log(t_('search_result_line', p.repo, p.package, p.version) + tag);
         if (p.description) console.log(t_('search_result_desc', p.description));
       }
       if (results.length > 50) console.log(t_('search_more_results', String(results.length - 50)));

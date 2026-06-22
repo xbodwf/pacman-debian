@@ -20,6 +20,8 @@
   "error_unknown_operation_short": "错误：未知操作 '-{0}'",
   "search_result_line": "{0}/{1} {2}",
   "search_result_desc": "    {0}",
+  "search_result_installed": " [{0}：{1}]",
+  "installed": "已安装",
   "search_more_results": "... 还有 {0} 个",
   "no_pkg_found_matching": "未找到与 '{0}' 匹配的软件包",
   "pkg_up_to_date": "{0} 已是最新版",
