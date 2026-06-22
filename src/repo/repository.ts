@@ -319,10 +319,14 @@ function flushWrite() {
 export async function syncRepos(force: boolean = false): Promise<void> {
   const cfg = loadConfig();
   if (!fs.existsSync(PKG_CACHE)) fs.mkdirSync(PKG_CACHE, { recursive: true });
-  const cols = process.stdout.columns || 80;
+  let cols = process.stdout.columns || 80;
+  const onResize = () => { cols = process.stdout.columns || 80; };
+  process.stdout.on('resize', onResize);
   const progress = new RepoProgress();
   const namePad = Math.max(...cfg.repos.map(r => r.name.length), 8) + 2;
   const fixedNameWidth = namePad; // fixed width for repo name column
+  // Fixed prefix: space + name + 7size + space + 3unit + 2gap + 12rate + space + 5eta + space + bracket + space + 3pct + %
+  const prefixFixed = 2 + fixedNameWidth + 7 + 1 + 3 + 2 + 12 + 1 + 5 + 1 + 1 + 1 + 1 + 3 + 1;
   progress.init(cfg.repos.map(r => r.name));
 
   const tasks = cfg.repos.map(async (repo, idx) => {
@@ -352,8 +356,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const eta = smoothedRate > 0 && totalExpected > 0 ? (totalExpected - totalDownloaded) / smoothedRate : 0;
       const etaStr = formatETA(eta);
       const pct = totalExpected > 0 ? Math.round(totalDownloaded / totalExpected * 100) : 0;
-      const prefixLen = 2 + fixedNameWidth + 7 + 1 + 3 + 2 + rateStr.length + 1 + 5 + 1 + 2 + 1 + 3 + 1;
-      const bar = drawProgressBar(pct, cols - prefixLen);
+      const bar = drawProgressBar(pct, cols - prefixFixed);
       return ` ${pname}${' '.repeat(fixedNameWidth - repo.name.length)}${color.size(dl.val.padStart(7))} ${dl.unit.padEnd(3)}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`;
     };
 
@@ -429,7 +432,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const finalRate = elapsed > 0 ? totalDownloaded / elapsed : 0;
       const dl = humanSize(totalDownloaded, 1);
       const rateStr = formatRate(finalRate);
-      const bar = drawProgressBar(100, cols - (2 + fixedNameWidth + 7 + 1 + 3 + 2 + rateStr.length + 1 + 5 + 1 + 2 + 1 + 4));
+      const bar = drawProgressBar(100, cols - prefixFixed);
       progress.setRow(idx,
         ` ${pname}${' '.repeat(fixedNameWidth - repo.name.length)}${color.size(dl.val.padStart(7))} ${dl.unit.padEnd(3)}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}`
       );
@@ -440,6 +443,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
 
   await Promise.all(tasks);
   progress.finish();
+  process.stdout.removeListener('resize', onResize);
   invalidateCache();
 }
 
