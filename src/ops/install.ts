@@ -412,7 +412,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     const pkgLabel = `${p.package}-${p.version}-${p.architecture || 'any'}`;
     const displayName = pkgLabel.length > nameWidth ? pkgLabel.slice(0, nameWidth - 3) + '...' : pkgLabel;
     let finalRate = 0, prevTime = Date.now(), prevBytes = 0, smoothRate = 0;
-    const barLen = () => Math.max(cols - nameWidth - 39, 5);
+    const barLen = () => 30;
 
     const localPath = await downloadPkg(p, undefined, (rec, tot) => {
       const now = Date.now();
@@ -457,12 +457,11 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   const totalSizeStr = humanSize(totalSz, 1);
   const totalRateStr = formatRate(totalRate);
   const totalNameWidth = Math.max(25, Math.floor(cols * 0.35));
-  const totalBar = drawProgressBar(100, Math.max(cols - totalNameWidth - 39, 5));
+  const totalBar = drawProgressBar(100, 30);
   process.stdout.write(` ${totalLabel.padEnd(totalNameWidth)} ${totalSizeStr.val.padStart(6)} ${totalSizeStr.unit.padEnd(3)}  ${totalRateStr} ${'00:00'} [${totalBar}] 100%\n`);
 
   // ---- Pre-install checks (after download, matching real pacman order) ----
   const prefixStr = `(${String(total)}/${String(total)}) `;
-
   const checkMessages = [
     t('progress_checking_keys_msg'),
     t('progress_checking_integrity_msg'),
@@ -470,15 +469,13 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     t('progress_checking_conflicts_msg'),
     t('progress_checking_space_msg'),
   ];
-  const tw = (s: string) => terminalWidth(s);
-  const maxMsgTw = Math.max(...checkMessages.map(m => tw(m)));
-  const prefixTw = tw(prefixStr);
+  const msgTw = (s: string) => terminalWidth(s);
+  const maxMsgTw = Math.max(...checkMessages.map(m => msgTw(m)));
+  const prefixTw = msgTw(prefixStr);
 
   const fmtCheck = (msg: string) => {
-    const msgTw = tw(msg);
-    const padLen = maxMsgTw - msgTw;
-    const barLen = Math.max(cols - prefixTw - maxMsgTw - 2 - 1 - 3 - 1, 5);
-    const bar = drawProgressBar(100, barLen);
+    const padLen = maxMsgTw - msgTw(msg);
+    const bar = drawProgressBar(100, 30);
     process.stdout.write(`${prefixStr}${msg}${' '.repeat(padLen)} [${bar}] 100%\n`);
   };
 
