@@ -168,8 +168,20 @@ export async function parseArgs(args: string[]): Promise<void> {
 
   // Short-form
   if (!raw.startsWith('-')) { console.error(t_('error_unknown_operation', raw)); process.exit(1); }
-  const op = raw[1];
-  const flags = raw.slice(2);
+  let op = raw[1];
+  let flags = raw.slice(2);
+
+  // Merge flags from subsequent short-flag args (e.g. "-S -y -u" → flags="yu")
+  while (rest.length > 0 && rest[0].startsWith('-') && rest[0].length === 2 && !rest[0].startsWith('--')) {
+    const next = rest.shift()!;
+    if (op === 'S' || op === 'U') {
+      flags += next[1];
+    } else if (op === 'R') {
+      flags += next[1];
+    } else if (op === 'Q') {
+      flags += next[1];
+    }
+  }
 
   if (op === 'h') { help(); return; }
   if (op === 'V') { console.log(t_('version_string', VERSION)); return; }
