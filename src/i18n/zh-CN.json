@@ -38,7 +38,11 @@
   "error_unresolvable_conflicts": "错误：存在无法解决的软件包冲突",
   "progress_downloading": "({0}/{1}) 正在下载 {2}",
   "progress_checking_integrity": "({0}/{1}) 正在检查软件包完整性            {2} 100%",
-  "progress_loading_files": "({0}/{1}) 正在加载软件包文件                 {2} 100%",
+  "progress_loading_files": "({0}/{1}) 正在加载软件包文件          {2} 100%",
+  "progress_checking_keys": "({0}/{1}) 正在检查密钥                      {2} 100%",
+  "progress_checking_conflicts": "({0}/{1}) 正在检查文件冲突            {2} 100%",
+  "progress_checking_space": "({0}/{1}) 正在检查可用存储空间          {2} 100%",
+  "downloading_packages": ":: 正在获取软件包......",
   "progress_installing": "({0}/{1}) 正在安装 {2}{3} 100%",
   "progress_removing": "({0}/{1}) 正在删除 {2}{3} 100%",
   "pkg_removed": "{0} 已删除",
@@ -118,5 +122,7 @@
   "progress_installing_single": "({0}/{1}) 正在安装 {2}{3} 100%",
   "progress_upgrading": "({0}/{1}) 正在升级 {2}...",
   "would_upgrade": "  将要升级：{0}",
-  "error_no_build_function": "PKGBUILD 中没有 build()、prepare()、check() 或 package() 函数"
+  "error_no_build_function": "PKGBUILD 中没有 build()、prepare()、check() 或 package() 函数",
+  "running_hooks": ":: 正在运行事务后钩子函数...",
+  "total_all": "全部"
 }
