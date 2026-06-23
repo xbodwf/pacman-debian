@@ -213,15 +213,11 @@ async function main() {
       const includeDir = '/etc/pacman.d';
       if (!fs.existsSync(includeDir)) fs.mkdirSync(includeDir, { recursive: true });
       if (!fs.existsSync(multilibPath)) {
-        const arch = process.arch === 'arm64' ? 'arm64' : 'x86_64';
-        const server = arch === 'arm64'
-          ? 'Server = https://mirrors.ustc.edu.cn/archlinuxarm/$arch/$repo'
-          : 'Server = https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch';
         fs.writeFileSync(multilibPath, [
-          `# Multilib mirror`,
-          server,
+          `# Multilib mirror (x86_64 32-bit compatibility)`,
+          `Server = https://mirrors.tuna.tsinghua.edu.cn/archlinux/\$repo/os/\$arch`,
           `Type = arch`,
-          `Architecture = auto`,
+          `Architecture = x86_64`,
           ``,
         ].join('\n'));
       }
