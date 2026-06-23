@@ -202,6 +202,36 @@ async function main() {
     console.log(t('setup_config_exists', CONFIG_PATH));
   }
 
+  // --- Ask to add multilib repo ---
+  const multilibPath = '/etc/pacman.d/multilib';
+  const multilibSection = '[multilib]';
+  const hasMultilib = fs.existsSync(CONFIG_PATH) &&
+    fs.readFileSync(CONFIG_PATH, 'utf8').includes(multilibSection);
+
+  if (!hasMultilib && await ask('prompt_add_multilib')) {
+    try {
+      const includeDir = '/etc/pacman.d';
+      if (!fs.existsSync(includeDir)) fs.mkdirSync(includeDir, { recursive: true });
+      if (!fs.existsSync(multilibPath)) {
+        const arch = process.arch === 'arm64' ? 'arm64' : 'x86_64';
+        const server = arch === 'arm64'
+          ? 'Server = https://mirrors.ustc.edu.cn/archlinuxarm/$arch/$repo'
+          : 'Server = https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch';
+        fs.writeFileSync(multilibPath, [
+          `# Multilib mirror`,
+          server,
+          `Type = arch`,
+          `Architecture = auto`,
+          ``,
+        ].join('\n'));
+      }
+      fs.appendFileSync(CONFIG_PATH, `\n[multilib]\nInclude = ${multilibPath}\n`);
+      console.log('Added [multilib] repository to pacman.conf');
+    } catch (e: any) {
+      console.error(`Failed to add multilib: ${e.message}`);
+    }
+  }
+
   // --- Symlink /var/lib/pacman -> /var/lib/pacman-debian ---
   if (!fs.existsSync(PACMAN_DB_SYMLINK)) {
     try {
