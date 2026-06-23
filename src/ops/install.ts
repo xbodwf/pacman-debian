@@ -412,7 +412,8 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     const pkgLabel = `${p.package}-${p.version}-${p.architecture || 'any'}`;
     const displayName = pkgLabel.length > nameWidth ? pkgLabel.slice(0, nameWidth - 3) + '...' : pkgLabel;
     let finalRate = 0, prevTime = Date.now(), prevBytes = 0, smoothRate = 0;
-    const barLen = () => 30;
+    const bar = (pct: number) => drawProgressBar(pct, 30);
+    const suffix = (barStr: string) => `[${barStr}] `;
 
     const localPath = await downloadPkg(p, undefined, (rec, tot) => {
       const now = Date.now();
@@ -427,13 +428,18 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       const eta = smoothRate > 0 && tot > 0 ? (tot - rec) / smoothRate : 0;
       const etaS = formatETA(eta);
       const pct = tot > 0 ? Math.round(rec / tot * 100) : 0;
-      const bar = drawProgressBar(pct, barLen());
-      process.stdout.write(`\r${displayName.padEnd(nameWidth)} ${dl.val.padStart(6)} ${dl.unit.padEnd(3)}  ${rateStr} ${etaS} [${bar}] ${String(pct).padStart(3)}%`);
+      const barStr = bar(pct);
+      const left = `${displayName.padEnd(nameWidth)} ${dl.val.padStart(6)} ${dl.unit.padEnd(3)}  ${rateStr} ${etaS} `;
+      const right = `[${barStr}] ${String(pct).padStart(3)}%`;
+      const pad = Math.max(cols - left.length - right.length, 0);
+      process.stdout.write(`\r${left}${' '.repeat(pad)}${right}`);
     });
 
     const finalSize = humanSize(p.size || 0, 1);
-    const finalBar = drawProgressBar(100, barLen());
-    process.stdout.write(`\r${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${formatRate(finalRate)} ${'00:00'} [${finalBar}] 100%\n`);
+    const left = `${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${formatRate(finalRate)} ${'00:00'} `;
+    const right = `[${bar(100)}] 100%`;
+    const pad = Math.max(cols - left.length - right.length, 0);
+    process.stdout.write(`\r${left}${' '.repeat(pad)}${right}\n`);
     return { pkg: p, path: localPath, rate: finalRate };
   };
 
@@ -458,7 +464,10 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   const totalRateStr = formatRate(totalRate);
   const totalNameWidth = Math.max(25, Math.floor(cols * 0.35));
   const totalBar = drawProgressBar(100, 30);
-  process.stdout.write(` ${totalLabel.padEnd(totalNameWidth)} ${totalSizeStr.val.padStart(6)} ${totalSizeStr.unit.padEnd(3)}  ${totalRateStr} ${'00:00'} [${totalBar}] 100%\n`);
+  const totalLeft = ` ${totalLabel.padEnd(totalNameWidth)} ${totalSizeStr.val.padStart(6)} ${totalSizeStr.unit.padEnd(3)}  ${totalRateStr} ${'00:00'} `;
+  const totalRight = `[${totalBar}] 100%`;
+  const totalPad = Math.max(cols - totalLeft.length - totalRight.length, 0);
+  process.stdout.write(`${totalLeft}${' '.repeat(totalPad)}${totalRight}\n`);
 
   // ---- Pre-install checks (after download, matching real pacman order) ----
   const prefixStr = `(${String(total)}/${String(total)}) `;
@@ -474,9 +483,12 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   const prefixTw = msgTw(prefixStr);
 
   const fmtCheck = (msg: string) => {
+    const left = `${prefixStr}${msg}`;
     const padLen = maxMsgTw - msgTw(msg);
     const bar = drawProgressBar(100, 30);
-    process.stdout.write(`${prefixStr}${msg}${' '.repeat(padLen)} [${bar}] 100%\n`);
+    const right = `[${bar}] 100%`;
+    const pad = Math.max(cols - terminalWidth(left + ' '.repeat(padLen)) - terminalWidth(right), 0);
+    process.stdout.write(`${left}${' '.repeat(padLen + pad)}${right}\n`);
   };
 
   // 1. Keys check
