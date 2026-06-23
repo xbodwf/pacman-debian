@@ -122,8 +122,32 @@ async function main() {
   // --- Symlink /etc/pacman → /etc/pacman-debian ---
   await handleLink(SYMLINK_PATH, CONFIG_DIR);
 
-  // --- Symlink /etc/pacman.conf → /etc/pacman-debian/pacman.conf ---
-  await handleLink('/etc/pacman.conf', CONFIG_PATH);
+  // --- Copy /etc/pacman.conf from /etc/pacman-debian/pacman.conf ---
+  // Symlinks don't work with yay/purego's file existence checks
+  if (!fs.existsSync('/etc/pacman.conf')) {
+    if (await ask('prompt_create_default_config', '/etc/pacman.conf')) {
+      fs.copyFileSync(CONFIG_PATH, '/etc/pacman.conf');
+      console.log(`Created /etc/pacman.conf (copy)`);
+    }
+  } else {
+    try {
+      const stat = fs.lstatSync('/etc/pacman.conf');
+      if (stat.isSymbolicLink()) {
+        const existing = fs.readlinkSync('/etc/pacman.conf');
+        if (existing !== CONFIG_PATH) {
+          console.log(`Symlink /etc/pacman.conf -> ${existing} is wrong target, fixing...`);
+          fs.unlinkSync('/etc/pacman.conf');
+          fs.copyFileSync(CONFIG_PATH, '/etc/pacman.conf');
+          console.log(`Copied /etc/pacman.conf from ${CONFIG_PATH}`);
+        } else {
+          // Replace symlink with a real copy (yay/purego compatibility)
+          fs.unlinkSync('/etc/pacman.conf');
+          fs.copyFileSync(CONFIG_PATH, '/etc/pacman.conf');
+          console.log(`Replaced symlink /etc/pacman.conf with real copy`);
+        }
+      }
+    } catch {}
+  }
 
   // --- Default config ---
   if (!fs.existsSync(CONFIG_PATH)) {

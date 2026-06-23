@@ -5,10 +5,10 @@ function main(): void {
   const cfg = loadConfig();
   const args = process.argv.slice(2);
 
-  // Filter out --config if present (we ignore custom config paths for now)
+  // Filter out flags we don't handle (go-pacmanconf calls us with these)
   const filtered: string[] = [];
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--config') { i++; continue; }
+    if (args[i] === '--config' || args[i] === '--root' || args[i] === '-r') { i++; continue; }
     filtered.push(args[i]);
   }
 

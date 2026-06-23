@@ -844,6 +844,7 @@ int alpm_pkg_has_provide(alpm_pkg_t *pkg, const char *name) {
 const char *alpm_pkg_get_url(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->url : NULL; }
 const char *alpm_pkg_get_arch(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->arch : NULL; }
 const char *alpm_pkg_get_base64_sig(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->base64_sig : NULL; }
+const char *alpm_pkg_get_sig(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->base64_sig : NULL; }
 void *alpm_pkg_get_provides(alpm_pkg_t *pkg) { (void)pkg; return NULL; }
 alpm_pkgreason_t alpm_pkg_get_reason(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->reason : ALPM_PKG_REASON_DEPEND; }
 alpm_pkgfrom_t alpm_pkg_get_origin(alpm_pkg_t *pkg) { return pkg ? ((pkg_internal *)pkg)->origin : ALPM_PKG_FROM_LOCALDB; }
