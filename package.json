@@ -1,6 +1,6 @@
 {
   "name": "pacman-debian",
-  "version": "7.3.22",
+  "version": "7.3.23",
   "description": "A Debian/Ubuntu package manager using Arch Linux pacman syntax. Manages .deb packages at dpkg level, supports Arch .pkg.tar.zst, AUR helpers (yay), and makepkg. Configurable multi-repo setup.",
   "pacmanVersion": "7.1.0",
   "main": "dist/index.js",

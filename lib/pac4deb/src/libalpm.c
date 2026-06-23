@@ -202,7 +202,7 @@ static pkg_internal *json_to_pkg(json_ctx *j) {
 
 /* Load JSONL file (one flat JSON object per line) */
 alpm_list_t *load_jsonl_file(const char *filepath) {
-	alpm_list_t *pkgs = NULL;
+	alpm_list_t *pkgs = NULL, *tail = NULL;
 	int fd = open(filepath, O_RDONLY);
 	if (fd < 0) return NULL;
 	struct stat st;
@@ -224,7 +224,14 @@ alpm_list_t *load_jsonl_file(const char *filepath) {
 				pkg_internal *p = json_to_pkg(&j);
 				if (p->name && *(p->name)) {
 					p->origin = ALPM_PKG_FROM_SYNCDB;
-					pkgs = alpm_list_add(pkgs, p);
+					alpm_list_t *lp = malloc(sizeof(alpm_list_t));
+					if (lp) {
+						lp->data = p; lp->next = NULL; lp->prev = tail;
+						if (tail) tail->next = lp; else pkgs = lp;
+						tail = lp;
+					} else {
+						pkg_free(p);
+					}
 				} else {
 					pkg_free(p);
 				}
@@ -260,7 +267,7 @@ static alpm_list_t *load_json_file(const char *filepath) {
 
 /* Load packages from dpkg status file */
 static alpm_list_t *load_dpkg_status(const char *path) {
-	alpm_list_t *pkgs = NULL;
+	alpm_list_t *pkgs = NULL, *tail = NULL;
 	FILE *f = fopen(path, "r");
 	if (!f) return NULL;
 	fseek(f, 0, SEEK_END);
@@ -317,8 +324,15 @@ static alpm_list_t *load_dpkg_status(const char *path) {
 			pkg->depends = strdup(depends);
 			pkg->provides = strdup(provides[0] ? provides : "");
 			pkg->reason = ALPM_PKG_REASON_EXPLICIT;
-			pkgs = alpm_list_add(pkgs, pkg);
-}
+			alpm_list_t *lp = malloc(sizeof(alpm_list_t));
+			if (lp) {
+				lp->data = pkg; lp->next = NULL; lp->prev = tail;
+				if (tail) tail->next = lp; else pkgs = lp;
+				tail = lp;
+			} else {
+				pkg_free(pkg);
+			}
+		}
 		p = end ? end + 2 : NULL;
 	}
 	free(buf);
@@ -326,38 +340,45 @@ static alpm_list_t *load_dpkg_status(const char *path) {
 }
 
 /* Load all packages from local DB directory (each subdir has a desc file) */
-static alpm_list_t *load_localdb_dir(const char *dirpath) {
-	alpm_list_t *pkgs = NULL;
-	DIR *d = opendir(dirpath);
-	if (!d) return NULL;
-	struct dirent *entry;
-	while ((entry = readdir(d)) != NULL) {
-		if (entry->d_name[0] == '.') continue;
-		if (strcmp(entry->d_name, "by-name") == 0) continue;
-		char path[4096];
-		snprintf(path, sizeof(path), "%s/%s/desc", dirpath, entry->d_name);
-		int fd = open(path, O_RDONLY);
-		if (fd < 0) continue;
-		struct stat st;
-		if (fstat(fd, &st) < 0 || st.st_size == 0) { close(fd); continue; }
-		char *buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-		close(fd);
-		if (buf == MAP_FAILED) continue;
-		json_ctx j;
-		json_init(&j, buf);
-		if (json_next(&j) != '{') { munmap(buf, st.st_size); continue; }
-		pkg_internal *p = json_to_pkg(&j);
-		if (p->name && *(p->name)) {
-			p->origin = ALPM_PKG_FROM_LOCALDB;
-			pkgs = alpm_list_add(pkgs, p);
-		} else {
-			pkg_free(p);
-		}
-		munmap(buf, st.st_size);
-	}
-	closedir(d);
-	return pkgs;
-}
+ static alpm_list_t *load_localdb_dir(const char *dirpath) {
+ 	alpm_list_t *pkgs = NULL, *tail = NULL;
+ 	DIR *d = opendir(dirpath);
+ 	if (!d) return NULL;
+ 	struct dirent *entry;
+ 	while ((entry = readdir(d)) != NULL) {
+ 		if (entry->d_name[0] == '.') continue;
+ 		if (strcmp(entry->d_name, "by-name") == 0) continue;
+ 		char path[4096];
+ 		snprintf(path, sizeof(path), "%s/%s/desc", dirpath, entry->d_name);
+ 		int fd = open(path, O_RDONLY);
+ 		if (fd < 0) continue;
+ 		struct stat st;
+ 		if (fstat(fd, &st) < 0 || st.st_size == 0) { close(fd); continue; }
+ 		char *buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+ 		close(fd);
+ 		if (buf == MAP_FAILED) continue;
+ 		json_ctx j;
+ 		json_init(&j, buf);
+ 		if (json_next(&j) != '{') { munmap(buf, st.st_size); continue; }
+ 		pkg_internal *p = json_to_pkg(&j);
+ 		if (p->name && *(p->name)) {
+ 			p->origin = ALPM_PKG_FROM_LOCALDB;
+			alpm_list_t *lp = malloc(sizeof(alpm_list_t));
+			if (lp) {
+				lp->data = p; lp->next = NULL; lp->prev = tail;
+				if (tail) tail->next = lp; else pkgs = lp;
+				tail = lp;
+			} else {
+				pkg_free(p);
+			}
+ 		} else {
+ 			pkg_free(p);
+ 		}
+ 		munmap(buf, st.st_size);
+ 	}
+ 	closedir(d);
+ 	return pkgs;
+ }
 
 /* Resolve Debian alternatives: readlink /bin/<cmd> to find real binary,
    then map its package name back to the virtual provide name.

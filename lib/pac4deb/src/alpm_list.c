@@ -20,6 +20,28 @@ alpm_list_t *alpm_list_add(alpm_list_t *list, void *data) {
 	return list;
 }
 
+/* Fast append: returns the new tail for subsequent calls */
+alpm_list_t *alpm_list_add_last(alpm_list_t *list, alpm_list_t *tail, void *data) {
+	alpm_list_t *lp = malloc(sizeof(alpm_list_t));
+	if (!lp) return NULL;
+	lp->data = data;
+	lp->prev = NULL;
+	lp->next = NULL;
+	if (!list) { list = lp; tail = lp; return tail ? tail : list; }
+	// If we have a valid tail, use it directly
+	if (tail) {
+		tail->next = lp;
+		lp->prev = tail;
+		return lp;
+	}
+	// Fallback: find tail
+	alpm_list_t *ptr = list;
+	while (ptr->next) ptr = ptr->next;
+	ptr->next = lp;
+	lp->prev = ptr;
+	return lp;
+}
+
 void alpm_list_free(alpm_list_t *list) {
 	alpm_list_t *it = list;
 	while (it) { alpm_list_t *next = it->next; free(it); it = next; }
