@@ -104,7 +104,7 @@ const char *alpm_pkg_get_desc(alpm_pkg_t *pkg);
 const char *alpm_pkg_get_url(alpm_pkg_t *pkg);
 const char *alpm_pkg_get_arch(alpm_pkg_t *pkg);
 const char *alpm_pkg_get_base64_sig(alpm_pkg_t *pkg);
-const char *alpm_pkg_get_sig(alpm_pkg_t *pkg);
+int alpm_pkg_get_sig(alpm_pkg_t *pkg, void **sig, size_t *sig_len);
 alpm_pkgreason_t alpm_pkg_get_reason(alpm_pkg_t *pkg);
 alpm_pkgfrom_t alpm_pkg_get_origin(alpm_pkg_t *pkg);
 alpm_time_t alpm_pkg_get_builddate(alpm_pkg_t *pkg);
