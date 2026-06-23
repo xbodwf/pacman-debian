@@ -431,6 +431,8 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     const pkgLabel = `${p.package}-${p.version}-${p.architecture || 'any'}`;
     const displayName = pkgLabel.length > nameWidth ? pkgLabel.slice(0, nameWidth - 3) + '...' : pkgLabel;
     let finalRate = 0, prevTime = Date.now(), prevBytes = 0, smoothRate = 0;
+    // prefix before bar: space + 6size + space + 3unit + 2gap + 12rate + space + 5eta + 2[brackets + space
+    const prefixFixed = nameWidth + 1 + 6 + 1 + 3 + 2 + 12 + 1 + 5 + 1 + 1;
 
     const localPath = await downloadPkg(p, undefined, (rec, tot) => {
       const now = Date.now();
@@ -445,17 +447,14 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       const eta = smoothRate > 0 && tot > 0 ? (tot - rec) / smoothRate : 0;
       const etaS = formatETA(eta);
       const pct = tot > 0 ? Math.round(rec / tot * 100) : 0;
-      const barLen = Math.max(cols - nameWidth - 37, 10);
-      const bar = '#'.repeat(Math.round(pct / 100 * barLen)) + '-'.repeat(Math.max(barLen - Math.round(pct / 100 * barLen), 0));
+      const bar = drawProgressBar(pct, Math.max(cols - prefixFixed - 3 - 1, 5));
       process.stdout.write(`\r${displayName.padEnd(nameWidth)} ${dl.val.padStart(6)} ${dl.unit.padEnd(3)}  ${rateStr} ${etaS} [${bar}] ${String(pct).padStart(3)}%`);
     });
 
     // Completion line
     const finalSize = humanSize(p.size || 0, 1);
-    const finalRateStr = formatRate(finalRate);
-    const barLen = Math.max(cols - nameWidth - 37, 10);
-    const finalBar = '#'.repeat(barLen);
-    process.stdout.write(`\r${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${finalRateStr} ${'00:00'} [${finalBar}] 100%\n`);
+    const finalBar = drawProgressBar(100, Math.max(cols - prefixFixed - 3 - 1, 5));
+    process.stdout.write(`\r${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${formatRate(finalRate)} ${'00:00'} [${finalBar}] 100%\n`);
     return { pkg: p, path: localPath, rate: finalRate };
   };
 
@@ -478,9 +477,10 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   const totalLabel = `${t('total_all')} (${String(total)}/${String(total)})`;
   const totalSizeStr = humanSize(totalSz, 1);
   const totalRateStr = formatRate(totalRate);
-  const totalBarLen = Math.max(cols - 30, 10);
-  const totalBar = '#'.repeat(totalBarLen);
-  process.stdout.write(` ${totalLabel.padEnd(25)} ${totalSizeStr.val.padStart(6)} ${totalSizeStr.unit.padEnd(3)}  ${totalRateStr} ${'00:00'} [${totalBar}] 100%\n`);
+  const totalNameWidth = Math.max(25, Math.floor(cols * 0.35));
+  const totalPrefixFixed = 1 + totalNameWidth + 1 + 6 + 1 + 3 + 2 + 12 + 1 + 5 + 1 + 1;
+  const totalBar = drawProgressBar(100, Math.max(cols - totalPrefixFixed - 3 - 1, 5));
+  process.stdout.write(` ${totalLabel.padEnd(totalNameWidth)} ${totalSizeStr.val.padStart(6)} ${totalSizeStr.unit.padEnd(3)}  ${totalRateStr} ${'00:00'} [${totalBar}] 100%\n`);
 
   // Install phase (serial for safety)
   for (const { pkg: p, path: localPath } of downloaded) {
