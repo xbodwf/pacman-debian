@@ -92,7 +92,10 @@ function markAsExplicit(packages: string[]): void {
 function extractGlobalFlags(args: string[]): { operands: string[]; noconfirm: boolean; needed: boolean; noscriptlet: boolean; print: boolean } {
   let noconfirm = false, needed = false, noscriptlet = false, print = false;
   const operands: string[] = [];
-  for (const a of args) {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--config' || a === '--root' || a === '-r' || a === '--dbpath' || a === '-b') { i++; continue; }
+    if (a === '--') continue; // skip -- separator (not needed)
     switch (a) {
       case '--noconfirm': noconfirm = true; break;
       case '--confirm': noconfirm = false; break;
