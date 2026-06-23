@@ -118,6 +118,7 @@ struct __alpm_handle_t {
 	char *confpath;
 	alpm_db_t *localdb;
 	alpm_list_t *syncdbs;
+	int released;
 };
 
 alpm_handle_t *alpm_initialize(const char *root, const char *dbpath, alpm_errno_t *err) {
@@ -135,11 +136,15 @@ alpm_handle_t *alpm_initialize(const char *root, const char *dbpath, alpm_errno_
 
 int alpm_release(alpm_handle_t *handle) {
 	if (!handle) return -1;
+	if (handle->released) return 0;
 	alpm_db_unregister_all(handle);
 	free(handle->dbpath); handle->dbpath = NULL;
 	free(handle->logfile); handle->logfile = NULL;
 	free(handle->confpath); handle->confpath = NULL;
-	free(handle);
+	handle->released = 1;
+	handle->err = ALPM_ERR_OK;
+	// Don't free handle itself — dyalpm calls alpm_errno after alpm_release
+	// (use-after-free bug in dyalpm v0.1.3). Memory leak is negligible.
 	return 0;
 }
 
