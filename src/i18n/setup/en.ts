@@ -40,6 +40,7 @@ const _messages: Record<string, string> = {
   prompt_relink: "  Relink {0} → {1}?",
   prompt_create_symlink: "Create symlink {0} → {1}?",
   prompt_create_default_config: "Create default pacman.conf?",
+  prompt_add_multilib: "Add multilib repository for 32-bit compatibility packages? [y/N]:",
   prompt_repo_domain_prompt: "  Repository domain [default: {0}]:",
   error_prefix: "error: {0}",
 };

@@ -40,6 +40,7 @@ const _messages: Record<string, string> = {
   prompt_relink: "  重新链接 {0} → {1}？",
   prompt_create_symlink: "创建符号链接 {0} → {1}？",
   prompt_create_default_config: "创建默认 pacman.conf？",
+  prompt_add_multilib: "添加 multilib 仓库以支持 32 位兼容包？[y/N]:",
   prompt_repo_domain_prompt: "  仓库域名 [默认: {0}]:",
   error_prefix: "错误：{0}",
 };
