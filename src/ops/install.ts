@@ -400,11 +400,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   // Pre-install checks (5 steps matching real pacman)
   const total = allPkgs.length;
   const barDone = '#'.repeat(30);
-  const checks = [
-    t('progress_checking_integrity', String(total), String(total), barDone),
-  ];
   // Real pacman checks: keys, integrity, files, conflicts, space
-  // We simulate these with progress lines for compatibility
   const checkSteps = [
     t('progress_checking_keys', String(total), String(total), barDone),
     t('progress_checking_integrity', String(total), String(total), barDone),
@@ -431,6 +427,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     const displayName = pkgLabel.length > nameWidth ? pkgLabel.slice(0, nameWidth - 3) + '...' : pkgLabel;
 
     let prevTime = Date.now(), prevBytes = 0, smoothRate = 0;
+    let finalRate = 0;
 
     const localPath = await downloadPkg(p, undefined, (rec, tot) => {
       const now = Date.now();
@@ -438,6 +435,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       const instant = (rec - prevBytes) / chunkSec;
       smoothRate = smoothRate > 0 ? (instant + 2 * smoothRate) / 3 : instant;
       prevTime = now; prevBytes = rec;
+      finalRate = smoothRate;
 
       const dl = humanSize(rec, 1);
       const rateStr = formatRate(smoothRate);
@@ -450,7 +448,11 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     });
 
     // 下载完成，输出摘要行
-    const line = `${displayName.padEnd(nameWidth)} ${humanSize(p.size || 0, 1).val.padStart(6)} ${humanSize(p.size || 0, 1).unit.padEnd(3)}`;
+    const finalSize = humanSize(p.size || 0, 1);
+    const finalRateStr = formatRate(finalRate);
+    const barLen = Math.max(cols - nameWidth - 37, 10);
+    const finalBar = '#'.repeat(barLen);
+    const line = `${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${finalRateStr} ${'00:00'} [${finalBar}] 100%`;
     process.stdout.write(`\r${line}\n`);
     await installPkgFile(localPath, isExplicit ? (opts.asdeps ? 'dependency' : 'explicit') : 'dependency', opts);
   }
