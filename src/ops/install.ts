@@ -429,11 +429,11 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       const etaS = formatETA(eta);
       const pct = tot > 0 ? Math.round(rec / tot * 100) : 0;
       const barStr = bar(pct);
-      process.stdout.write(`\r${displayName.padEnd(nameWidth)} ${dl.val.padStart(6)} ${dl.unit.padEnd(3)}  ${rateStr} ${etaS}  [${barStr}] ${String(pct).padStart(3)}%`);
+      process.stdout.write(`\r ${displayName.padEnd(nameWidth)} ${dl.val.padStart(6)} ${dl.unit.padEnd(3)}  ${rateStr} ${etaS}  [${barStr}] ${String(pct).padStart(3)}%`);
     });
 
     const finalSize = humanSize(p.size || 0, 1);
-    process.stdout.write(`\r${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${formatRate(finalRate)} ${'00:00'}  [${bar(100)}] 100%\n`);
+    process.stdout.write(`\r ${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${formatRate(finalRate)} ${'00:00'}  [${bar(100)}] 100%\n`);
     return { pkg: p, path: localPath, rate: finalRate };
   };
 
