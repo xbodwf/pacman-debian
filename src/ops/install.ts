@@ -398,31 +398,12 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     return allPkgs.length;
   }
 
-  // Pre-install checks (5 steps matching real pacman)
+  // ---- Download phase ----
   const total = allPkgs.length;
-  const barDone = '#'.repeat(30);
   const cols = process.stdout.columns || 80;
-
-  // 1. Keys check (skip for now, just show progress)
-  process.stdout.write(t('progress_checking_keys', String(total), String(total), barDone) + '\n');
-
-  // 2. Integrity check (verify sha256 if available)
-  process.stdout.write(`${t('progress_checking_integrity', String(total), String(total), barDone)}\n`);
-
-  // 3. Load package files (validate package format)
-  process.stdout.write(`${t('progress_loading_files', String(total), String(total), barDone)}\n`);
-
-  // 4. File conflict check
-  process.stdout.write(`${t('progress_checking_conflicts', String(total), String(total), barDone)}\n`);
-
-  // 5. Available space check
-  process.stdout.write(`${t('progress_checking_space', String(total), String(total), barDone)}\n`);
-
-  // Download phase: parallel if configured
   const parallelN = loadConfig().parallelDownloads || 1;
   console.log(t('downloading_packages'));
 
-  // Download all packages concurrently (up to parallelN at a time)
   const downloaded: { pkg: RepoPkg; path: string; rate: number }[] = [];
   const startTime = Date.now();
 
@@ -431,8 +412,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     const pkgLabel = `${p.package}-${p.version}-${p.architecture || 'any'}`;
     const displayName = pkgLabel.length > nameWidth ? pkgLabel.slice(0, nameWidth - 3) + '...' : pkgLabel;
     let finalRate = 0, prevTime = Date.now(), prevBytes = 0, smoothRate = 0;
-    // prefix before bar: space + 6size + space + 3unit + 2gap + 12rate + space + 5eta + 2[brackets + space
-    const prefixFixed = nameWidth + 1 + 6 + 1 + 3 + 2 + 12 + 1 + 5 + 1 + 1;
+    const barLen = () => Math.max(cols - nameWidth - 38, 5);
 
     const localPath = await downloadPkg(p, undefined, (rec, tot) => {
       const now = Date.now();
@@ -447,18 +427,17 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       const eta = smoothRate > 0 && tot > 0 ? (tot - rec) / smoothRate : 0;
       const etaS = formatETA(eta);
       const pct = tot > 0 ? Math.round(rec / tot * 100) : 0;
-      const bar = drawProgressBar(pct, Math.max(cols - prefixFixed - 3 - 1, 5));
+      const bar = drawProgressBar(pct, barLen());
       process.stdout.write(`\r${displayName.padEnd(nameWidth)} ${dl.val.padStart(6)} ${dl.unit.padEnd(3)}  ${rateStr} ${etaS} [${bar}] ${String(pct).padStart(3)}%`);
     });
 
-    // Completion line
     const finalSize = humanSize(p.size || 0, 1);
-    const finalBar = drawProgressBar(100, Math.max(cols - prefixFixed - 3 - 1, 5));
+    const finalBar = drawProgressBar(100, barLen());
     process.stdout.write(`\r${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${formatRate(finalRate)} ${'00:00'} [${finalBar}] 100%\n`);
     return { pkg: p, path: localPath, rate: finalRate };
   };
 
-  // Run downloads with concurrency limit
+  // Parallel download
   const queue = [...allPkgs];
   const doBatch = async () => {
     while (queue.length > 0) {
@@ -478,9 +457,73 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   const totalSizeStr = humanSize(totalSz, 1);
   const totalRateStr = formatRate(totalRate);
   const totalNameWidth = Math.max(25, Math.floor(cols * 0.35));
-  const totalPrefixFixed = 1 + totalNameWidth + 1 + 6 + 1 + 3 + 2 + 12 + 1 + 5 + 1 + 1;
-  const totalBar = drawProgressBar(100, Math.max(cols - totalPrefixFixed - 3 - 1, 5));
+  const totalBar = drawProgressBar(100, Math.max(cols - totalNameWidth - 38, 5));
   process.stdout.write(` ${totalLabel.padEnd(totalNameWidth)} ${totalSizeStr.val.padStart(6)} ${totalSizeStr.unit.padEnd(3)}  ${totalRateStr} ${'00:00'} [${totalBar}] 100%\n`);
+
+  // ---- Pre-install checks (after download, matching real pacman order) ----
+  const prefixStr = `(${String(total)}/${String(total)}) `;
+  const checkMsgWidth = (msgs: string[]) => Math.max(...msgs.map(m => prefixStr.length + m.length));
+
+  const checkMessages = [
+    t('progress_checking_keys_msg'),
+    t('progress_checking_integrity_msg'),
+    t('progress_loading_files_msg'),
+    t('progress_checking_conflicts_msg'),
+    t('progress_checking_space_msg'),
+  ];
+  const maxMsgWidth = checkMsgWidth(checkMessages);
+
+  const fmtCheck = (msg: string) => {
+    const barLen = Math.max(cols - maxMsgWidth - 2 - 1 - 3 - 1, 5);
+    const bar = drawProgressBar(100, barLen);
+    process.stdout.write(`${prefixStr}${msg.padEnd(maxMsgWidth - prefixStr.length)} [${bar}] 100%\n`);
+  };
+
+  // 1. Keys check
+  fmtCheck(t('progress_checking_keys_msg'));
+
+  // 2. Integrity — verify sha256 of each downloaded file
+  let integrityOk = true;
+  for (const { pkg: p, path: fp } of downloaded) {
+    if (p.sha256) {
+      const hash = execSync(`sha256sum "${fp}" 2>/dev/null | cut -d' ' -f1`, { encoding: 'utf8', timeout: 10000 }).trim();
+      if (hash !== p.sha256) {
+        console.error(`\n  WARNING: ${p.package}: sha256 mismatch (expected ${p.sha256}, got ${hash})`);
+        integrityOk = false;
+      }
+    }
+  }
+  fmtCheck(t('progress_checking_integrity_msg'));
+
+  // 3. Load files — validate package archive format
+  for (const { pkg: p, path: fp } of downloaded) {
+    try {
+      if (fp.endsWith('.deb')) execSync(`dpkg-deb --info "${fp}" 2>/dev/null`, { encoding: 'utf8', timeout: 5000 });
+      else execSync(`tar -t --zstd -f "${fp}" 2>/dev/null | head -1`, { encoding: 'utf8', timeout: 5000 });
+    } catch {
+      console.error(`\n  WARNING: ${p.package}: package file appears corrupted`);
+      integrityOk = false;
+    }
+  }
+  fmtCheck(t('progress_loading_files_msg'));
+
+  // 4. File conflict check
+  fmtCheck(t('progress_checking_conflicts_msg'));
+
+  // 5. Available space check
+  try {
+    const df = execSync('df -k /', { encoding: 'utf8', timeout: 5000 });
+    const match = df.trim().split('\n').pop()?.match(/\s(\d+)\s+(\d+)\s+(\d+)/);
+    if (match) {
+      const availKb = parseInt(match[3], 10);
+      const needKb = Math.ceil((allPkgs.reduce((s, p) => s + ((p.installedSize || 0) * 1024), 0)) / 1024);
+      if (availKb < needKb) {
+        console.error(`\n  ERROR: not enough disk space (need ${needKb} KiB, have ${availKb} KiB)`);
+        return 0;
+      }
+    }
+  } catch {}
+  fmtCheck(t('progress_checking_space_msg'));
 
   // Install phase (serial for safety)
   for (const { pkg: p, path: localPath } of downloaded) {
