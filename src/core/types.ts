@@ -71,6 +71,7 @@ export interface RepoConfig {
 export interface Config {
   architecture: string;
   color: boolean;
+  parallelDownloads: number;
   repos: RepoConfig[];
 }
 

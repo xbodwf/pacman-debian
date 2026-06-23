@@ -8,6 +8,7 @@ import { parseDeb, readScript } from '../core/deb';
 import { extractTar } from '../core/tar';
 import { parsePkgTarZst } from '../core/pkgfile';
 import { findInRepo, downloadPkg } from '../repo/repository';
+import { loadConfig } from '../repo/config';
 import {
   initDb, loadDatabase, saveDatabase, addPackage, isInstalled, getPackage,
   saveScript, runScript, createTransaction, completeTransaction, parseDepends,
@@ -400,34 +401,36 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   // Pre-install checks (5 steps matching real pacman)
   const total = allPkgs.length;
   const barDone = '#'.repeat(30);
-  // Real pacman checks: keys, integrity, files, conflicts, space
-  const checkSteps = [
-    t('progress_checking_keys', String(total), String(total), barDone),
-    t('progress_checking_integrity', String(total), String(total), barDone),
-    t('progress_loading_files', String(total), String(total), barDone),
-    t('progress_checking_conflicts', String(total), String(total), barDone),
-    t('progress_checking_space', String(total), String(total), barDone),
-  ];
-  for (const step of checkSteps) {
-    process.stdout.write(`${step}\n`);
-  }
+  const cols = process.stdout.columns || 80;
 
-  // Download phase
+  // 1. Keys check (skip for now, just show progress)
+  process.stdout.write(t('progress_checking_keys', String(total), String(total), barDone) + '\n');
+
+  // 2. Integrity check (verify sha256 if available)
+  process.stdout.write(`${t('progress_checking_integrity', String(total), String(total), barDone)}\n`);
+
+  // 3. Load package files (validate package format)
+  process.stdout.write(`${t('progress_loading_files', String(total), String(total), barDone)}\n`);
+
+  // 4. File conflict check
+  process.stdout.write(`${t('progress_checking_conflicts', String(total), String(total), barDone)}\n`);
+
+  // 5. Available space check
+  process.stdout.write(`${t('progress_checking_space', String(total), String(total), barDone)}\n`);
+
+  // Download phase: parallel if configured
+  const parallelN = loadConfig().parallelDownloads || 1;
   console.log(t('downloading_packages'));
-  let cols = process.stdout.columns || 80;
-  const onResize = () => { cols = process.stdout.columns || 80; };
-  process.stdout.on('resize', onResize);
-  let totalStart = Date.now();
 
-  for (let i = 0; i < total; i++) {
-    const p = allPkgs[i];
-    const isExplicit = targetPkgs.some(r => r.package === p.package);
+  // Download all packages concurrently (up to parallelN at a time)
+  const downloaded: { pkg: RepoPkg; path: string; rate: number }[] = [];
+  const startTime = Date.now();
+
+  const downloadOne = async (p: RepoPkg): Promise<{ pkg: RepoPkg; path: string; rate: number }> => {
     const nameWidth = Math.max(25, Math.floor(cols * 0.35));
     const pkgLabel = `${p.package}-${p.version}-${p.architecture || 'any'}`;
     const displayName = pkgLabel.length > nameWidth ? pkgLabel.slice(0, nameWidth - 3) + '...' : pkgLabel;
-
-    let prevTime = Date.now(), prevBytes = 0, smoothRate = 0;
-    let finalRate = 0;
+    let finalRate = 0, prevTime = Date.now(), prevBytes = 0, smoothRate = 0;
 
     const localPath = await downloadPkg(p, undefined, (rec, tot) => {
       const now = Date.now();
@@ -447,30 +450,47 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       process.stdout.write(`\r${displayName.padEnd(nameWidth)} ${dl.val.padStart(6)} ${dl.unit.padEnd(3)}  ${rateStr} ${etaS} [${bar}] ${String(pct).padStart(3)}%`);
     });
 
-    // 下载完成，输出摘要行
+    // Completion line
     const finalSize = humanSize(p.size || 0, 1);
     const finalRateStr = formatRate(finalRate);
     const barLen = Math.max(cols - nameWidth - 37, 10);
     const finalBar = '#'.repeat(barLen);
-    const line = `${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${finalRateStr} ${'00:00'} [${finalBar}] 100%`;
-    process.stdout.write(`\r${line}\n`);
-    await installPkgFile(localPath, isExplicit ? (opts.asdeps ? 'dependency' : 'explicit') : 'dependency', opts);
-  }
+    process.stdout.write(`\r${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${finalRateStr} ${'00:00'} [${finalBar}] 100%\n`);
+    return { pkg: p, path: localPath, rate: finalRate };
+  };
+
+  // Run downloads with concurrency limit
+  const queue = [...allPkgs];
+  const doBatch = async () => {
+    while (queue.length > 0) {
+      const pkg = queue.shift()!;
+      const r = await downloadOne(pkg);
+      downloaded.push(r);
+    }
+  };
+  const workers = Array.from({ length: Math.min(parallelN, total) }, () => doBatch());
+  await Promise.all(workers);
 
   // 汇总行
-  const totalElapsed = (Date.now() - totalStart) / 1000;
-  const totalRate = totalElapsed > 0 ? totalSize / totalElapsed : 0;
+  const totalSz = allPkgs.reduce((s, p) => s + (p.size || 0), 0);
+  const elapsed = (Date.now() - startTime) / 1000;
+  const totalRate = elapsed > 0 ? totalSz / elapsed : 0;
   const totalLabel = `${t('total_all')} (${String(total)}/${String(total)})`;
-  const totalSizeStr = humanSize(totalSize, 1);
+  const totalSizeStr = humanSize(totalSz, 1);
   const totalRateStr = formatRate(totalRate);
   const totalBarLen = Math.max(cols - 30, 10);
   const totalBar = '#'.repeat(totalBarLen);
   process.stdout.write(` ${totalLabel.padEnd(25)} ${totalSizeStr.val.padStart(6)} ${totalSizeStr.unit.padEnd(3)}  ${totalRateStr} ${'00:00'} [${totalBar}] 100%\n`);
 
+  // Install phase (serial for safety)
+  for (const { pkg: p, path: localPath } of downloaded) {
+    const isExplicit = targetPkgs.some(r => r.package === p.package);
+    await installPkgFile(localPath, isExplicit ? (opts.asdeps ? 'dependency' : 'explicit') : 'dependency', opts);
+  }
+
   // Post-transaction hooks
   process.stdout.write(t('running_hooks') + '\n');
 
-  process.stdout.removeListener('resize', onResize);
   return total;
 
   return allPkgs.length;

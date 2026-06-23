@@ -41,7 +41,7 @@ function loadRepoFile(filePath: string): Record<string, string> {
 
 export function loadConfig(): Config {
   const nativeArch = process.arch === 'arm64' ? 'aarch64' : process.arch;
-  const cfg: Config = { architecture: nativeArch, color: false, repos: [] };
+  const cfg: Config = { architecture: nativeArch, color: false, parallelDownloads: 1, repos: [] };
   const configPath = findConfig();
   if (!fs.existsSync(configPath)) {
     cfg.repos.push({ name: 'ubuntu', type: 'debian', server: 'http://ports.ubuntu.com/ubuntu-ports', dist: 'noble', components: ['main', 'universe'] });
@@ -75,6 +75,7 @@ export function loadConfig(): Config {
 
     if (inOptions || !cur) {
       if (k === 'architecture') cfg.architecture = v;
+      else if (k === 'paralleldownloads') { const n = parseInt(v, 10); if (!isNaN(n) && n > 0) cfg.parallelDownloads = n; }
       continue;
     }
 
