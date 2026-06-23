@@ -17,7 +17,7 @@ import { writeDpkgEntry, dpkgHasPackage } from '../db/dpkg-compat';
 import { removePackage, getPackage as getLocalPkg } from '../db/localdb';
 import { resolveDeps, detectConflicts } from '../core/deps';
 import { formatBytes } from '../ui/format';
-import { humanSize, drawProgressBar, formatRate, formatETA } from '../ui/progress';
+import { humanSize, drawProgressBar, formatRate, formatETA, terminalWidth } from '../ui/progress';
 import { confirm } from '../ui/prompt';
 import { t } from '../i18n';
 import type { InstalledPackage, RepoPkg } from '../core/types';
@@ -412,7 +412,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     const pkgLabel = `${p.package}-${p.version}-${p.architecture || 'any'}`;
     const displayName = pkgLabel.length > nameWidth ? pkgLabel.slice(0, nameWidth - 3) + '...' : pkgLabel;
     let finalRate = 0, prevTime = Date.now(), prevBytes = 0, smoothRate = 0;
-    const barLen = () => Math.max(cols - nameWidth - 38, 5);
+    const barLen = () => Math.max(cols - nameWidth - 39, 5);
 
     const localPath = await downloadPkg(p, undefined, (rec, tot) => {
       const now = Date.now();
@@ -457,12 +457,11 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   const totalSizeStr = humanSize(totalSz, 1);
   const totalRateStr = formatRate(totalRate);
   const totalNameWidth = Math.max(25, Math.floor(cols * 0.35));
-  const totalBar = drawProgressBar(100, Math.max(cols - totalNameWidth - 38, 5));
+  const totalBar = drawProgressBar(100, Math.max(cols - totalNameWidth - 39, 5));
   process.stdout.write(` ${totalLabel.padEnd(totalNameWidth)} ${totalSizeStr.val.padStart(6)} ${totalSizeStr.unit.padEnd(3)}  ${totalRateStr} ${'00:00'} [${totalBar}] 100%\n`);
 
   // ---- Pre-install checks (after download, matching real pacman order) ----
   const prefixStr = `(${String(total)}/${String(total)}) `;
-  const checkMsgWidth = (msgs: string[]) => Math.max(...msgs.map(m => prefixStr.length + m.length));
 
   const checkMessages = [
     t('progress_checking_keys_msg'),
@@ -471,12 +470,16 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     t('progress_checking_conflicts_msg'),
     t('progress_checking_space_msg'),
   ];
-  const maxMsgWidth = checkMsgWidth(checkMessages);
+  const tw = (s: string) => terminalWidth(s);
+  const maxMsgTw = Math.max(...checkMessages.map(m => tw(m)));
+  const prefixTw = tw(prefixStr);
 
   const fmtCheck = (msg: string) => {
-    const barLen = Math.max(cols - maxMsgWidth - 2 - 1 - 3 - 1, 5);
+    const msgTw = tw(msg);
+    const padLen = maxMsgTw - msgTw;
+    const barLen = Math.max(cols - prefixTw - maxMsgTw - 2 - 1 - 3 - 1, 5);
     const bar = drawProgressBar(100, barLen);
-    process.stdout.write(`${prefixStr}${msg.padEnd(maxMsgWidth - prefixStr.length)} [${bar}] 100%\n`);
+    process.stdout.write(`${prefixStr}${msg}${' '.repeat(padLen)} [${bar}] 100%\n`);
   };
 
   // 1. Keys check

@@ -8,6 +8,22 @@ export function humanSize(n: number, dec: number): { val: string; unit: string }
   return { val: v.toFixed(dec), unit: u };
 }
 
+/** Calculate terminal display width (Chinese chars count as 2) */
+export function terminalWidth(s: string): number {
+  let w = 0;
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    // CJK Unified Ideographs and related blocks
+    if ((cp >= 0x2E80 && cp <= 0x9FFF) ||   // CJK Radicals + CJK Unified Ideographs
+        (cp >= 0xF900 && cp <= 0xFAFF) ||   // CJK Compatibility Ideographs
+        (cp >= 0xFF00 && cp <= 0xFFEF) ||   // Fullwidth forms
+        (cp >= 0x3000 && cp <= 0x303F))     // CJK Symbols and Punctuation
+      w += 2;
+    else w += 1;
+  }
+  return w;
+}
+
 export function drawProgressBar(pct: number, width: number): string {
   const barLen = Math.max(width, 5);
   const hashes = Math.round(pct / 100 * barLen);
