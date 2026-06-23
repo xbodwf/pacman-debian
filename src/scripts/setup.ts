@@ -152,25 +152,23 @@ async function main() {
   // --- Default config ---
   if (!fs.existsSync(CONFIG_PATH)) {
     if (await ask('prompt_create_default_config')) {
-      const arch = process.arch === 'arm64' ? 'arm64' : 'amd64';
-      const isDebian = fs.existsSync('/etc/debian_version');
-      const content = [
-        `# pacman-debian configuration file`,
-        `#`,
-        `# See /etc/pacman.d/ for mirrorlist examples`,
-        ``,
-        `[options]`,
-        `Architecture = ${arch}`,
-        ``,
-      ];
-      if (isDebian) {
-        content.push(
-          `# Include = /etc/pacman.d/debian-bookworm`,
-          `# Include = /etc/pacman.d/debian-updates`,
-          `# Include = /etc/pacman.d/debian-security`,
-        );
+      const templatePath = path.resolve(__dirname, '../../resources/pacman.conf.template');
+      if (fs.existsSync(templatePath)) {
+        fs.copyFileSync(templatePath, CONFIG_PATH);
+      } else {
+        const arch = process.arch === 'arm64' ? 'arm64' : 'amd64';
+        const content = [
+          `[options]`,
+          `Architecture = ${arch}`,
+          `ParallelDownloads = 5`,
+          `Color`,
+          `SigLevel = Never`,
+          `LocalFileSigLevel = Optional`,
+          ``,
+        ];
+        fs.writeFileSync(CONFIG_PATH, content.join('\n'));
       }
-      content.push(`# Include = /etc/pacman.d/mirrorlist`, '');
+      console.log(t('setup_config_created', CONFIG_PATH));
 
       const includeDir = '/etc/pacman.d';
       if (!fs.existsSync(includeDir)) fs.mkdirSync(includeDir, { recursive: true });
@@ -199,8 +197,6 @@ async function main() {
         ].join('\n'));
         console.log(t('setup_include_created', exampleArch));
       }
-      fs.writeFileSync(CONFIG_PATH, content.join('\n'));
-      console.log(t('setup_config_created', CONFIG_PATH));
     }
   } else {
     console.log(t('setup_config_exists', CONFIG_PATH));

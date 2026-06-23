@@ -1,0 +1,18 @@
+[options]
+Architecture = auto
+#RootDir     = /
+#DBPath      = /var/lib/pacman/
+#CacheDir    = /var/cache/pacman/pkg/
+#LogFile     = /var/log/pacman.log
+#GPGDir      = /etc/pacman.d/gnupg/
+#HookDir     = /etc/pacman.d/hooks/
+HoldPkg     = pacman glibc
+ParallelDownloads = 5
+#CheckSpace
+Color
+#VerbosePkgLists
+#DownloadUser = alpm
+
+SigLevel    = Never
+LocalFileSigLevel = Optional
+#RemoteFileSigLevel = Required

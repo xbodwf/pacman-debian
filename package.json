@@ -1,11 +1,12 @@
 {
   "name": "pacman-debian",
-  "version": "7.3.20",
+  "version": "7.3.21",
   "description": "A Debian/Ubuntu package manager using Arch Linux pacman syntax. Manages .deb packages at dpkg level, supports Arch .pkg.tar.zst, AUR helpers (yay), and makepkg. Configurable multi-repo setup.",
   "pacmanVersion": "7.1.0",
   "main": "dist/index.js",
   "files": [
     "dist/",
+    "resources/",
     "lib/pac4deb/Makefile",
     "lib/pac4deb/README.md",
     "lib/pac4deb/include/alpm.h",
