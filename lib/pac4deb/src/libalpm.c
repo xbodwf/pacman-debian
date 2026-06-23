@@ -112,11 +112,12 @@ static int load_local_db(alpm_db_t *db);
 static int load_sync_db(alpm_db_t *db);
 
 struct __alpm_handle_t {
+	alpm_errno_t err;
 	char *dbpath;
 	char *logfile;
+	char *confpath;
 	alpm_db_t *localdb;
 	alpm_list_t *syncdbs;
-	alpm_errno_t err;
 };
 
 alpm_handle_t *alpm_initialize(const char *root, const char *dbpath, alpm_errno_t *err) {
@@ -135,8 +136,9 @@ alpm_handle_t *alpm_initialize(const char *root, const char *dbpath, alpm_errno_
 int alpm_release(alpm_handle_t *handle) {
 	if (!handle) return -1;
 	alpm_db_unregister_all(handle);
-	free(handle->dbpath);
-	free(handle->logfile);
+	free(handle->dbpath); handle->dbpath = NULL;
+	free(handle->logfile); handle->logfile = NULL;
+	free(handle->confpath); handle->confpath = NULL;
 	free(handle);
 	return 0;
 }
@@ -867,7 +869,19 @@ int alpm_option_set_dbpath(alpm_handle_t *handle, const char *dbpath) {
 	return 0;
 }
 int alpm_option_set_gpgdir(alpm_handle_t *handle, const char *gpgdir) { (void)handle; (void)gpgdir; return 0; }
+static const char DEFAULT_CONF_PATH[] = "/etc/pacman.conf";
+
 const char *alpm_option_get_dbpath(alpm_handle_t *handle) { return handle ? handle->dbpath : DB_DIR; }
+const char *alpm_option_get_config_path(alpm_handle_t *handle) {
+	if (handle && handle->confpath) return handle->confpath;
+	return DEFAULT_CONF_PATH;
+}
+const char *alpm_option_get_conf_path(alpm_handle_t *handle) { return alpm_option_get_config_path(handle); }
+int alpm_option_set_config_path(alpm_handle_t *handle, const char *path) {
+	if (handle) { free(handle->confpath); handle->confpath = strdup(path ? path : ""); }
+	return 0;
+}
+int alpm_option_set_conf_path(alpm_handle_t *handle, const char *path) { return alpm_option_set_config_path(handle, path); }
 alpm_db_t *alpm_option_get_localdb(alpm_handle_t *handle) { return handle ? handle->localdb : NULL; }
 /* Check if a sync db's packages.idx exists */
 static int sync_db_has_idx(alpm_db_t *db) {

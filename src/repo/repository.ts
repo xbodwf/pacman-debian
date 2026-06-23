@@ -325,8 +325,8 @@ export async function syncRepos(force: boolean = false): Promise<void> {
   const progress = new RepoProgress();
   const namePad = Math.max(...cfg.repos.map(r => r.name.length), 8) + 2;
   const fixedNameWidth = namePad; // fixed width for repo name column
-  // Fixed prefix: space + name + 7size + space + 3unit + 2gap + 12rate + space + 5eta + space + bracket + space + 3pct + %
-  const prefixFixed = 2 + fixedNameWidth + 7 + 1 + 3 + 2 + 12 + 1 + 5 + 1 + 1 + 1 + 1 + 3 + 1;
+  // Fixed prefix: space(1) + paddedName + 7size + 1space + 3unit + 2gap + 12rate + 1space + 5eta + 1space + [ + ] + 1space + 3pct + %
+  const prefixFixed = 1 + fixedNameWidth + 7 + 1 + 3 + 2 + 12 + 1 + 5 + 1 + 1 + 1 + 1 + 3 + 1;
   progress.init(cfg.repos.map(r => r.name));
 
   const tasks = cfg.repos.map(async (repo, idx) => {
@@ -356,8 +356,9 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const eta = smoothedRate > 0 && totalExpected > 0 ? (totalExpected - totalDownloaded) / smoothedRate : 0;
       const etaStr = formatETA(eta);
       const pct = totalExpected > 0 ? Math.round(totalDownloaded / totalExpected * 100) : 0;
-      const bar = drawProgressBar(pct, cols - prefixFixed);
-      return ` ${pname}${' '.repeat(fixedNameWidth - repo.name.length)}${color.size(dl.val.padStart(7))} ${dl.unit.padEnd(3)}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`;
+      const bar = drawProgressBar(pct, Math.max(cols - prefixFixed, 5));
+      const line = ` ${pname}${' '.repeat(fixedNameWidth - repo.name.length)}${color.size(dl.val.padStart(7))} ${dl.unit.padEnd(3)}  ${color.rate(rateStr)} ${etaStr} [${bar}] ${String(pct).padStart(3)}%`;
+      return line.length < cols ? line + ' '.repeat(cols - line.length) : line;
     };
 
     const updateProgress = () => {
@@ -391,7 +392,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       }
 
       if (notModified) {
-        progress.setRow(idx, ` ${pname}${' '.repeat(fixedNameWidth - repo.name.length)}${color.ok(t('repo_already_uptodate'))}`);
+        progress.setRow(idx, `\x1b[K ${pname}${' '.repeat(fixedNameWidth - repo.name.length)}${color.ok(t('repo_already_uptodate'))}`);
         return;
       }
 
@@ -432,12 +433,12 @@ export async function syncRepos(force: boolean = false): Promise<void> {
       const finalRate = elapsed > 0 ? totalDownloaded / elapsed : 0;
       const dl = humanSize(totalDownloaded, 1);
       const rateStr = formatRate(finalRate);
-      const bar = drawProgressBar(100, cols - prefixFixed);
+      const bar = drawProgressBar(100, Math.max(cols - prefixFixed, 5));
       progress.setRow(idx,
-        ` ${pname}${' '.repeat(fixedNameWidth - repo.name.length)}${color.size(dl.val.padStart(7))} ${dl.unit.padEnd(3)}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}`
+        `\x1b[K ${pname}${' '.repeat(fixedNameWidth - repo.name.length)}${color.size(dl.val.padStart(7))} ${dl.unit.padEnd(3)}  ${color.rate(rateStr)} ${String(Math.floor(totalSec / 60)).padStart(2, '0')}:${String(totalSec % 60).padStart(2, '0')} [${bar}] ${color.ok('100%')}`
       );
     } catch (e: any) {
-      progress.setRow(idx, ` ${pname}${' '.repeat(fixedNameWidth - repo.name.length)}${color.error(t('repo_sync_failed'))}: ${e.message}`);
+      progress.setRow(idx, `\x1b[K ${pname}${' '.repeat(fixedNameWidth - repo.name.length)}${color.error(t('repo_sync_failed'))}: ${e.message}`);
     }
   });
 

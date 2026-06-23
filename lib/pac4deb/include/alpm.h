@@ -121,6 +121,10 @@ int alpm_option_set_usesyslog(alpm_handle_t *handle, int use);
 int alpm_option_set_dbpath(alpm_handle_t *handle, const char *dbpath);
 int alpm_option_set_logfile(alpm_handle_t *handle, const char *logfile);
 const char *alpm_option_get_dbpath(alpm_handle_t *handle);
+const char *alpm_option_get_config_path(alpm_handle_t *handle);
+const char *alpm_option_get_conf_path(alpm_handle_t *handle);
+int alpm_option_set_config_path(alpm_handle_t *handle, const char *path);
+int alpm_option_set_conf_path(alpm_handle_t *handle, const char *path);
 alpm_db_t *alpm_option_get_localdb(alpm_handle_t *handle);
 alpm_list_t *alpm_option_get_syncdbs(alpm_handle_t *handle);
 
