@@ -410,7 +410,9 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   /** Render a right-aligned progress bar line. leftText precedes `[`, rightText follows `]`. */
   const barLine = (leftText: string, rightText: string, pct: number): string => {
     const barLen = Math.max(cols - terminalWidth(leftText) - terminalWidth(rightText), 5);
-    return `${leftText}${drawProgressBar(pct, barLen)}${rightText}`;
+    const line = `${leftText}${drawProgressBar(pct, barLen)}${rightText}`;
+    if (terminalWidth(line) < cols) return line + ' '.repeat(cols - terminalWidth(line));
+    return line;
   };
 
   const nameWidth = Math.max(25, Math.floor(cols * 0.35));
@@ -434,20 +436,20 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       const etaS = formatETA(eta);
       const pct = tot > 0 ? Math.round(rec / tot * 100) : 0;
       const line = barLine(
-        `\r ${displayName.padEnd(nameWidth)} ${dl.val.padStart(6)} ${dl.unit.padEnd(3)}  ${rateStr} ${etaS}  [`,
+        ` ${displayName.padEnd(nameWidth)} ${dl.val.padStart(6)} ${dl.unit.padEnd(3)}  ${rateStr} ${etaS}  [`,
         `] ${String(pct).padStart(3)}%`,
         pct,
       );
-      process.stdout.write(line);
+      process.stdout.write(`\r${line}`);
     });
 
     const finalSize = humanSize(p.size || 0, 1);
     const compLine = barLine(
-      `\r ${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${formatRate(finalRate)} ${'00:00'}  [`,
+      ` ${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${formatRate(finalRate)} ${'00:00'}  [`,
       `] 100%`,
       100,
     );
-    process.stdout.write(compLine + '\n');
+    process.stdout.write(`\r${compLine}\n`);
     return { pkg: p, path: localPath, rate: finalRate };
   };
 
