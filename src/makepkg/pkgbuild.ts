@@ -63,13 +63,11 @@ function bashGetFn(f: string, p: string): string {
   } catch { return ''; }
 }
 
-export function parsePkgbuild(pkgbuildPath: string, ignoreArch = false): PkgbuildInfo {
+export function parsePkgbuild(pkgbuildPath: string, _ignoreArch = false): PkgbuildInfo {
   if (!fs.existsSync(pkgbuildPath)) throw new Error(`PKGBUILD not found: ${pkgbuildPath}`);
   const absPath = path.resolve(pkgbuildPath);
 
   const arch = bashGetArray('arch', absPath);
-  const systemArch = process.arch === 'arm64' ? 'aarch64' : process.arch;
-  const validArch = ignoreArch || arch.length === 0 || arch.includes('any') || arch.includes(systemArch);
 
   const info: PkgbuildInfo = {
     pkgbase: bashGet('pkgbase', absPath) || undefined,
@@ -101,12 +99,11 @@ export function parsePkgbuild(pkgbuildPath: string, ignoreArch = false): Pkgbuil
     packageFn: bashGetFn('package', absPath),
     prepareFn: bashGetFn('prepare', absPath),
     checkFn: bashGetFn('check', absPath),
-    validArch,
+    validArch: true,
   };
 
   if (!info.pkgname) throw new Error('PKGBUILD missing pkgname');
   if (!info.pkgver) throw new Error('PKGBUILD missing pkgver');
-  if (!info.validArch) throw new Error(`PKGBUILD does not support architecture: ${systemArch} (${arch.join(', ')})`);
 
   return info;
 }
