@@ -33,13 +33,39 @@ function verifyChecksum(filePath: string, expected: string, algorithm: string): 
 }
 
 function getSourceFilename(url: string): string {
-  const s = url.split('::')[1] || url;
-  return path.basename(s.split('?')[0].split('#')[0]);
+  const parts = url.split('::');
+  return path.basename(parts[0].split('?')[0].split('#')[0]);
 }
 
 function getSourceURL(url: string): string {
   const parts = url.split('::');
   return parts.length > 1 ? parts[1] : parts[0];
+}
+
+function isVcsUrl(url: string): boolean {
+  if (/^(git|hg|svn)\+(http|https|ssh):\/\//.test(url)) return true;
+  if (/^(git|hg|svn):\/\//.test(url)) return true;
+  const clean = url.split('#')[0].split('?')[0];
+  if ((clean.startsWith('http://') || clean.startsWith('https://')) && clean.endsWith('.git')) return true;
+  return false;
+}
+
+function cloneVcsSource(url: string, destDir: string, dirName?: string): string {
+  const cleanUrl = url.replace(/^(git|hg|svn)\+/, '').split('#')[0].split('?')[0];
+  const defaultName = path.basename(cleanUrl).replace(/\.(git|hg)$/, '');
+  const repoDirName = dirName || defaultName;
+  const dest = path.join(destDir, repoDirName);
+  if (fs.existsSync(dest) && fs.readdirSync(dest).length > 0) return dest;
+  ensureDir(destDir);
+  console.log(`  cloning ${defaultName}...`);
+  if (url.startsWith('hg+')) {
+    execSync(`hg clone "${cleanUrl}" "${dest}"`, { stdio: 'pipe', timeout: 300000 });
+  } else if (cleanUrl.startsWith('git://') || cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')) {
+    execSync(`git clone --depth=1 "${cleanUrl}" "${dest}"`, { stdio: 'pipe', timeout: 300000 });
+  } else {
+    throw new Error(`unsupported VCS URL: ${url}`);
+  }
+  return dest;
 }
 
 function downloadSource(url: string, destDir: string): string {
@@ -160,7 +186,12 @@ export async function buildPkgbuild(options: BuildOptions): Promise<string> {
     for (const src of info.source) {
       const filename = getSourceFilename(src);
       const srcUrl = getSourceURL(src);
-      if (srcUrl.startsWith('http://') || srcUrl.startsWith('https://') || srcUrl.startsWith('ftp://')) {
+      if (isVcsUrl(srcUrl)) {
+        const dirName = src.includes('::') ? filename : filename.replace(/\.(git|hg)$/, '');
+        const cloned = cloneVcsSource(srcUrl, srcdir, dirName);
+        sourceFiles.push(cloned);
+        console.log(`    ${dirName}... cloned`);
+      } else if (srcUrl.startsWith('http://') || srcUrl.startsWith('https://') || srcUrl.startsWith('ftp://')) {
         const file = downloadSource(src, srcdir);
         sourceFiles.push(file);
         console.log(`    ${filename}... done`);
@@ -171,7 +202,7 @@ export async function buildPkgbuild(options: BuildOptions): Promise<string> {
         sourceFiles.push(dest);
         console.log(`    ${filename}... found in workspace`);
       } else {
-        console.log(`    ${filename}... not found`);
+        throw new Error(`source not found: ${src}`);
       }
     }
   }
@@ -186,6 +217,7 @@ export async function buildPkgbuild(options: BuildOptions): Promise<string> {
         const filename = getSourceFilename(info.source[i]);
         const file = sourceFiles[i];
         if (!file || !fs.existsSync(file)) continue;
+        if (fs.statSync(file).isDirectory()) continue; // VCS sources, skip checksum
         if (hasSha) {
           if (verifyChecksum(file, info.sha256sums[i], 'sha256')) {
             console.log(`    ${filename} ... Passed`);
@@ -206,7 +238,10 @@ export async function buildPkgbuild(options: BuildOptions): Promise<string> {
   // --- Extract sources ---
   if (!options.skipExtract) {
     const noextract = new Set(info.noextract);
-    const toExtract = sourceFiles.filter(f => !noextract.has(path.basename(f)));
+    const toExtract = sourceFiles.filter(f => {
+      if (noextract.has(path.basename(f))) return false;
+      try { return fs.statSync(f).isFile(); } catch { return false; }
+    });
     if (toExtract.length > 0) {
       console.log('  :: Extracting sources...');
       for (const file of toExtract) {

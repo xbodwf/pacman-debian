@@ -17,7 +17,7 @@ import { writeDpkgEntry, dpkgHasPackage } from '../db/dpkg-compat';
 import { removePackage, getPackage as getLocalPkg } from '../db/localdb';
 import { resolveDeps, detectConflicts } from '../core/deps';
 import { formatBytes } from '../ui/format';
-import { humanSize, drawProgressBar, formatRate, formatETA } from '../ui/progress';
+import { humanSize, drawProgressBar, formatRate, formatETA, terminalWidth } from '../ui/progress';
 import { confirm } from '../ui/prompt';
 import { t } from '../i18n';
 import type { InstalledPackage, RepoPkg } from '../core/types';
@@ -407,13 +407,18 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   const downloaded: { pkg: RepoPkg; path: string; rate: number }[] = [];
   const startTime = Date.now();
 
+  /** Render a right-aligned progress bar line. leftText precedes `[`, rightText follows `]`. */
+  const barLine = (leftText: string, rightText: string, pct: number): string => {
+    const barLen = Math.max(cols - terminalWidth(leftText) - terminalWidth(rightText), 5);
+    return `${leftText}${drawProgressBar(pct, barLen)}${rightText}`;
+  };
+
+  const nameWidth = Math.max(25, Math.floor(cols * 0.35));
+
   const downloadOne = async (p: RepoPkg): Promise<{ pkg: RepoPkg; path: string; rate: number }> => {
-    const nameWidth = Math.max(25, Math.floor(cols * 0.35));
     const pkgLabel = `${p.package}-${p.version}-${p.architecture || 'any'}`;
     const displayName = pkgLabel.length > nameWidth ? pkgLabel.slice(0, nameWidth - 3) + '...' : pkgLabel;
     let finalRate = 0, prevTime = Date.now(), prevBytes = 0, smoothRate = 0;
-    const bar = (pct: number) => drawProgressBar(pct, 30);
-    const suffix = (barStr: string) => `[${barStr}] `;
 
     const localPath = await downloadPkg(p, undefined, (rec, tot) => {
       const now = Date.now();
@@ -428,12 +433,21 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       const eta = smoothRate > 0 && tot > 0 ? (tot - rec) / smoothRate : 0;
       const etaS = formatETA(eta);
       const pct = tot > 0 ? Math.round(rec / tot * 100) : 0;
-      const barStr = bar(pct);
-      process.stdout.write(`\r ${displayName.padEnd(nameWidth)} ${dl.val.padStart(6)} ${dl.unit.padEnd(3)}  ${rateStr} ${etaS}  [${barStr}] ${String(pct).padStart(3)}%`);
+      const line = barLine(
+        `\r ${displayName.padEnd(nameWidth)} ${dl.val.padStart(6)} ${dl.unit.padEnd(3)}  ${rateStr} ${etaS}  [`,
+        `] ${String(pct).padStart(3)}%`,
+        pct,
+      );
+      process.stdout.write(line);
     });
 
     const finalSize = humanSize(p.size || 0, 1);
-    process.stdout.write(`\r ${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${formatRate(finalRate)} ${'00:00'}  [${bar(100)}] 100%\n`);
+    const compLine = barLine(
+      `\r ${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${formatRate(finalRate)} ${'00:00'}  [`,
+      `] 100%`,
+      100,
+    );
+    process.stdout.write(compLine + '\n');
     return { pkg: p, path: localPath, rate: finalRate };
   };
 
@@ -456,9 +470,12 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   const totalLabel = `${t('total_all')} (${String(total)}/${String(total)})`;
   const totalSizeStr = humanSize(totalSz, 1);
   const totalRateStr = formatRate(totalRate);
-  const totalNameWidth = Math.max(25, Math.floor(cols * 0.35));
-  const totalBar = drawProgressBar(100, 30);
-  process.stdout.write(` ${totalLabel.padEnd(totalNameWidth)} ${totalSizeStr.val.padStart(6)} ${totalSizeStr.unit.padEnd(3)}  ${totalRateStr} ${'00:00'}  [${totalBar}] 100%\n`);
+  const totalLine = barLine(
+    ` ${totalLabel.padEnd(nameWidth)} ${totalSizeStr.val.padStart(6)} ${totalSizeStr.unit.padEnd(3)}  ${totalRateStr} ${'00:00'}  [`,
+    `] 100%`,
+    100,
+  );
+  process.stdout.write(totalLine + '\n');
 
   // ---- Pre-install checks (after download, matching real pacman order) ----
   const prefixStr = `(${String(total)}/${String(total)}) `;
@@ -469,10 +486,16 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     t('progress_checking_conflicts_msg'),
     t('progress_checking_space_msg'),
   ];
+  const maxMsgTw = Math.max(...checkMessages.map(m => terminalWidth(m)));
 
   const fmtCheck = (msg: string) => {
-    const bar = drawProgressBar(100, 30);
-    process.stdout.write(`${prefixStr}${msg} [${bar}] 100%\n`);
+    const pad = maxMsgTw - terminalWidth(msg);
+    const line = barLine(
+      `${prefixStr}${msg}${' '.repeat(pad)} [`,
+      `] 100%`,
+      100,
+    );
+    process.stdout.write(line + '\n');
   };
 
   // 1. Keys check
@@ -531,11 +554,5 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   process.stdout.write(t('running_hooks') + '\n');
 
   return total;
-
-  return allPkgs.length;
-}
-
-function formatPfx(i: number, n: number): string {
-  return `(${i}/${n}) `;
 }
 
