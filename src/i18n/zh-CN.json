@@ -122,6 +122,8 @@
   "error_sha256_mismatch": "{0} 的 sha256sum 校验和不匹配",
   "error_md5_mismatch": "{0} 的 md5sum 校验和不匹配",
   "confirm_proceed": ":: 继续安装吗？",
+  "processing_changes": ":: 正在处理软件包变更...",
+  "retrieving_packages": ":: 正在下载软件包...",
   "warn_prefix": "  警告：{0}",
   "progress_loading_data": "({0}/{1}) 正在加载软件包数据...           {2} 100%",
   "progress_installing_single": "({0}/{1}) 正在安装 {2}{3} 100%",

@@ -145,10 +145,7 @@ export async function buildPkgbuild(options: BuildOptions): Promise<string> {
   // Determine effective architecture (match system from PKGBUILD's arch list)
   const archMap: Record<string, string> = { arm64: 'aarch64', arm: 'armv7h', x86: 'i686', x64: 'x86_64' };
   const systemArch = archMap[process.arch] || process.arch;
-  const effectiveArch = info.arch.find(a => a === systemArch || a === 'any') || info.arch[0] || 'any';
-  if (effectiveArch !== systemArch && !info.arch.includes('any')) {
-    console.log(`  warning: system arch ${systemArch} not in PKGBUILD arch list, using ${effectiveArch}`);
-  }
+  const effectiveArch = info.arch.find(a => a === systemArch || a === 'any') || systemArch;
 
   const srcdir = path.join(workDir, 'src', `${info.pkgname}-${info.pkgver}`);
   const pkgdir = path.join(workDir, 'pkg', `${info.pkgname}-${info.pkgver}`);
@@ -266,7 +263,8 @@ export async function buildPkgbuild(options: BuildOptions): Promise<string> {
       `export pkgname="${info.pkgname}"`,
       `export pkgver="${info.pkgver}"`,
       `export pkgrel="${info.pkgrel}"`,
-      `export CARCH="${info.arch[0] || 'aarch64'}"`,
+      `export CARCH="${systemArch}"`,
+      `source "${pkgbuildPath}"`,
       'cd "$srcdir"',
       '',
     ];

@@ -35,70 +35,123 @@ export interface PkgbuildInfo {
   validArch: boolean;
 }
 
-function bashGet(v: string, p: string): string {
-  try {
-    return execSync(
-      `bash -c 'source "${p}" 2>/dev/null; printf "%s" "${'$'}{${v}}" 2>/dev/null'`,
-      { encoding: 'utf8', timeout: 10000 }
-    ).trim();
-  } catch { return ''; }
-}
+/**
+ * Source the PKGBUILD ONCE in a single bash invocation and extract all
+ * variables + functions. Previously each variable/function required a
+ * separate execSync (≈35 forks), which was very slow on low-end ARM boards.
+ */
+function bashParsePkgbuild(absPath: string): { scalars: Record<string, string>; arrays: Record<string, string[]>; funcs: Record<string, string> } {
+  const script = [
+    `source "${absPath}" 2>/dev/null`,
+    'echo "S pkgbase=${pkgbase-unset}"',
+    'echo "S pkgname=${pkgname-unset}"',
+    'echo "S pkgver=${pkgver-unset}"',
+    'echo "S pkgrel=${pkgrel-unset}"',
+    'echo "S epoch=${epoch-unset}"',
+    'echo "S pkgdesc=${pkgdesc-unset}"',
+    'echo "S url=${url-unset}"',
+    'echo "S install=${install-unset}"',
+    'for i in "${arch[@]+"${arch[@]}"}"; do printf "A arch=%s\\n" "$i"; done',
+    'for i in "${license[@]+"${license[@]}"}"; do printf "A license=%s\\n" "$i"; done',
+    'for i in "${groups[@]+"${groups[@]}"}"; do printf "A groups=%s\\n" "$i"; done',
+    'for i in "${depends[@]+"${depends[@]}"}"; do printf "A depends=%s\\n" "$i"; done',
+    'for i in "${makedepends[@]+"${makedepends[@]}"}"; do printf "A makedepends=%s\\n" "$i"; done',
+    'for i in "${optdepends[@]+"${optdepends[@]}"}"; do printf "A optdepends=%s\\n" "$i"; done',
+    'for i in "${checkdepends[@]+"${checkdepends[@]}"}"; do printf "A checkdepends=%s\\n" "$i"; done',
+    'for i in "${provides[@]+"${provides[@]}"}"; do printf "A provides=%s\\n" "$i"; done',
+    'for i in "${conflicts[@]+"${conflicts[@]}"}"; do printf "A conflicts=%s\\n" "$i"; done',
+    'for i in "${replaces[@]+"${replaces[@]}"}"; do printf "A replaces=%s\\n" "$i"; done',
+    'for i in "${source[@]+"${source[@]}"}"; do printf "A source=%s\\n" "$i"; done',
+    'for i in "${noextract[@]+"${noextract[@]}"}"; do printf "A noextract=%s\\n" "$i"; done',
+    'for i in "${sha256sums[@]+"${sha256sums[@]}"}"; do printf "A sha256sums=%s\\n" "$i"; done',
+    'for i in "${md5sums[@]+"${md5sums[@]}"}"; do printf "A md5sums=%s\\n" "$i"; done',
+    'for i in "${validpgpkeys[@]+"${validpgpkeys[@]}"}"; do printf "A validpgpkeys=%s\\n" "$i"; done',
+    'for i in "${options[@]+"${options[@]}"}"; do printf "A options=%s\\n" "$i"; done',
+    'for i in "${backup[@]+"${backup[@]}"}"; do printf "A backup=%s\\n" "$i"; done',
+    'for f in build package prepare check; do',
+    '  echo "F $f"',
+    '  declare -f "$f" 2>/dev/null || true',
+    '  echo "E $f"',
+    'done',
+  ].join('\n');
 
-function bashGetArray(v: string, p: string): string[] {
-  try {
-    const out = execSync(
-      `bash -c 'source "${p}" 2>/dev/null; for i in "${'$'}{${v}[@]}"; do echo "$i"; done' 2>/dev/null`,
-      { encoding: 'utf8', timeout: 10000 }
-    ).trim();
-    return out ? out.split('\n').filter(Boolean) : [];
-  } catch { return []; }
-}
+  const out = execSync('bash -s', { input: script, encoding: 'utf8', timeout: 10000 }).trim();
+  const lines = out.split('\n');
 
-function bashGetFn(f: string, p: string): string {
-  try {
-    return execSync(
-      `bash -c 'source "${p}" 2>/dev/null; declare -f ${f} 2>/dev/null'`,
-      { encoding: 'utf8', timeout: 10000 }
-    ).trim();
-  } catch { return ''; }
+  const scalars: Record<string, string> = {};
+  const arrays: Record<string, string[]> = {};
+  const funcs: Record<string, string> = {};
+
+  let currentFunc: string | null = null;
+  let funcBuffer: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith('S ')) {
+      const val = line.substring(2);
+      const eqIdx = val.indexOf('=');
+      if (eqIdx > 0) {
+        const value = val.substring(eqIdx + 1);
+        if (value !== 'unset') scalars[val.substring(0, eqIdx)] = value;
+      }
+    } else if (line.startsWith('A ')) {
+      const val = line.substring(2);
+      const eqIdx = val.indexOf('=');
+      if (eqIdx > 0) {
+        const key = val.substring(0, eqIdx);
+        const value = val.substring(eqIdx + 1);
+        (arrays[key] || (arrays[key] = [])).push(value);
+      }
+    } else if (line.startsWith('F ')) {
+      currentFunc = line.substring(2);
+      funcBuffer = [];
+    } else if (line.startsWith('E ') && currentFunc !== null && line.substring(2) === currentFunc) {
+      if (funcBuffer.length > 0) funcs[currentFunc] = funcBuffer.join('\n');
+      currentFunc = null;
+      funcBuffer = [];
+    } else if (currentFunc !== null) {
+      funcBuffer.push(line);
+    }
+  }
+
+  return { scalars, arrays, funcs };
 }
 
 export function parsePkgbuild(pkgbuildPath: string, _ignoreArch = false): PkgbuildInfo {
   if (!fs.existsSync(pkgbuildPath)) throw new Error(`PKGBUILD not found: ${pkgbuildPath}`);
   const absPath = path.resolve(pkgbuildPath);
 
-  const arch = bashGetArray('arch', absPath);
+  const { scalars, arrays, funcs } = bashParsePkgbuild(absPath);
 
   const info: PkgbuildInfo = {
-    pkgbase: bashGet('pkgbase', absPath) || undefined,
-    pkgname: bashGet('pkgname', absPath),
-    pkgver: bashGet('pkgver', absPath),
-    pkgrel: bashGet('pkgrel', absPath),
-    epoch: bashGet('epoch', absPath) || undefined,
-    pkgdesc: bashGet('pkgdesc', absPath) || '',
-    arch,
-    url: bashGet('url', absPath) || undefined,
-    license: bashGetArray('license', absPath),
-    groups: bashGetArray('groups', absPath),
-    depends: bashGetArray('depends', absPath),
-    makedepends: bashGetArray('makedepends', absPath),
-    optdepends: bashGetArray('optdepends', absPath),
-    checkdepends: bashGetArray('checkdepends', absPath),
-    provides: bashGetArray('provides', absPath),
-    conflicts: bashGetArray('conflicts', absPath),
-    replaces: bashGetArray('replaces', absPath),
-    source: bashGetArray('source', absPath),
-    noextract: bashGetArray('noextract', absPath),
-    sha256sums: bashGetArray('sha256sums', absPath),
-    md5sums: bashGetArray('md5sums', absPath),
-    validpgpkeys: bashGetArray('validpgpkeys', absPath),
-    install: bashGet('install', absPath) || undefined,
-    options: bashGetArray('options', absPath),
-    backup: bashGetArray('backup', absPath),
-    buildFn: bashGetFn('build', absPath),
-    packageFn: bashGetFn('package', absPath),
-    prepareFn: bashGetFn('prepare', absPath),
-    checkFn: bashGetFn('check', absPath),
+    pkgbase: scalars['pkgbase'] || undefined,
+    pkgname: scalars['pkgname'] || '',
+    pkgver: scalars['pkgver'] || '',
+    pkgrel: scalars['pkgrel'] || '',
+    epoch: scalars['epoch'] || undefined,
+    pkgdesc: scalars['pkgdesc'] || '',
+    arch: arrays['arch'] || [],
+    url: scalars['url'] || undefined,
+    license: arrays['license'] || [],
+    groups: arrays['groups'] || [],
+    depends: arrays['depends'] || [],
+    makedepends: arrays['makedepends'] || [],
+    optdepends: arrays['optdepends'] || [],
+    checkdepends: arrays['checkdepends'] || [],
+    provides: arrays['provides'] || [],
+    conflicts: arrays['conflicts'] || [],
+    replaces: arrays['replaces'] || [],
+    source: arrays['source'] || [],
+    noextract: arrays['noextract'] || [],
+    sha256sums: arrays['sha256sums'] || [],
+    md5sums: arrays['md5sums'] || [],
+    validpgpkeys: arrays['validpgpkeys'] || [],
+    install: scalars['install'] || undefined,
+    options: arrays['options'] || [],
+    backup: arrays['backup'] || [],
+    buildFn: funcs['build'] || '',
+    packageFn: funcs['package'] || '',
+    prepareFn: funcs['prepare'] || '',
+    checkFn: funcs['check'] || '',
     validArch: true,
   };
 

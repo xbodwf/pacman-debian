@@ -1,6 +1,6 @@
 {
   "name": "pacman-debian",
-  "version": "7.3.36",
+  "version": "7.4.0",
   "description": "A Debian/Ubuntu package manager using Arch Linux pacman syntax. Manages .deb packages at dpkg level, supports Arch .pkg.tar.zst, AUR helpers (yay), and makepkg. Configurable multi-repo setup.",
   "pacmanVersion": "7.1.0",
   "main": "dist/index.js",
@@ -31,7 +31,8 @@
     "paclink": "dist/cli/paclink.js",
     "update-ca-trust": "dist/cli/update-ca-trust.js",
     "archlinux-java": "dist/cli/archlinux-java.js",
-    "fix_default": "dist/cli/fix_default.js"
+    "fix_default": "dist/cli/fix_default.js",
+    "pactree": "dist/cli/pactree.js"
   },
   "scripts": {
     "build": "tsc && make -s -C lib/pac4deb",

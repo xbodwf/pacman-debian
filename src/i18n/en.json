@@ -124,6 +124,8 @@
   "error_sha256_mismatch": "sha256sum mismatch for {0}",
   "error_md5_mismatch": "md5sum mismatch for {0}",
   "confirm_proceed": ":: Proceed with installation?",
+  "processing_changes": ":: Processing package changes...",
+  "retrieving_packages": ":: Retrieving packages...",
   "warn_prefix": "  warning: {0}",
   "progress_loading_data": "({0}/{1}) loading package data...           {2} 100%",
   "progress_installing_single": "({0}/{1}) installing {2}{3} 100%",

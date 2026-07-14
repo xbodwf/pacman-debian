@@ -3,6 +3,7 @@ export interface InstallOptions {
   noscriptlet?: boolean;
   asdeps?: boolean;
   print?: boolean;
+  allowFiles?: boolean;
 }
 
 export interface RemoveOptions {

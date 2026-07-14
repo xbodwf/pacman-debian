@@ -1,12 +1,15 @@
 const _messages: Record<string, string> = {
   link_created: "Link created: {0} {1} → {2}",
   link_removed: "Link removed: {0} (Debian package {1} unaffected)",
+  apt_removed: "Debian package {0} removed.",
+  apt_remove_failed: "Failed to remove Debian package {0}: {1}",
   link_skipped: "Link already exists: {0} → {1} (same mapping, skipped)",
   link_overwritten: "Link updated: {0} → {1} (was {2})",
   link_exists: 'Error: virtual package "{0}" already linked (target: {1})',
   link_not_found: 'Error: link "{0}" not found',
   deb_not_installed: 'Error: Debian package "{0}" is not installed',
   deb_not_installed_hint: "Install: sudo apt install {0}",
+  confirm_init: "Create {0} paclink mappings based on installed Debian packages?",
   need_virt_name: "Error: need <deb_pkg> and <virt_name> arguments",
   no_links: "No links. Use paclink -Ls <deb_pkg> <virt_name> to create.",
   no_link_match: 'No links matching "{0}".',
@@ -14,6 +17,8 @@ const _messages: Record<string, string> = {
   confirm_create: "Create link: {0} → {1} (= {2})",
   confirm_overwrite: "Link {0} already points to {1}. Overwrite to {2}?",
   confirm_remove: "Remove link: {0} → {1}",
+  confirm_pacman_remove: "Also remove via pacman -R {0}?",
+  confirm_apt_remove: "Also remove Debian package {0} via apt?",
   confirm_prompt: "[Y/n] ",
   cancelled: "Cancelled.",
   usage: "Usage:",
@@ -27,6 +32,7 @@ const _messages: Record<string, string> = {
   help_text: `paclink v{0} — Map Debian packages to Arch virtual package names
 
 Operations:
+  -I                         Initialize all common mappings from dpkg status
   -Ln <deb_pkg> <virt_name>  Create link (maps Debian package to Arch virtual name)
   -L                         List all links
   -Ls <keyword>              Search links
@@ -34,6 +40,7 @@ Operations:
   -R <virt_name>             Remove link
 
 Examples:
+  paclink -I                 Create mappings for all installed Debian packages
   paclink -Ln dash sh        Map dash as sh
   paclink -Ln bash sh        Map bash as sh
   paclink -Ln python3 python Map python3 as python

@@ -1,5 +1,4 @@
 import * as fs from 'node:fs';
-import { execSync } from 'node:child_process';
 import * as localdb from '../db/localdb';
 import { loadDatabase } from '../db/database';
 import { readDpkgStatus } from '../db/dpkg-compat';
@@ -15,19 +14,24 @@ export function listInstalled(filter?: string, quiet = false): void {
   }
   if (pkgs.length === 0) { console.log(t('no_pkgs_installed')); return; }
   pkgs.sort((a, b) => a.package.localeCompare(b.package));
-  for (const p of pkgs) console.log(quiet ? p.package : `${p.package} ${p.version}`);
+  const nameW = Math.min(Math.max(...pkgs.map(p => p.package.length)) + 2, 30);
+  for (const p of pkgs) {
+    if (quiet) { console.log(p.package); continue; }
+    const name = p.package.length > nameW ? p.package : p.package.padEnd(nameW);
+    console.log(`${name} ${p.version}`);
+  }
 }
 
 export function listExplicit(): void {
-  for (const p of localdb.getAllPackages()) {
-    if (p.reason === 'explicit') console.log(`${p.name} ${p.version}`);
-  }
+  const pkgs = localdb.getAllPackages().filter(p => p.reason === 'explicit');
+  const nameW = Math.min(Math.max(...pkgs.map(p => p.name.length)) + 2, 30);
+  for (const p of pkgs) console.log(`${p.name.padEnd(nameW)}${p.version}`);
 }
 
 export function listDeps(): void {
-  for (const p of localdb.getAllPackages()) {
-    if (p.reason === 'dependency') console.log(`${p.name} ${p.version}`);
-  }
+  const pkgs = localdb.getAllPackages().filter(p => p.reason === 'dependency');
+  const nameW = Math.min(Math.max(...pkgs.map(p => p.name.length)) + 2, 30);
+  for (const p of pkgs) console.log(`${p.name.padEnd(nameW)}${p.version}`);
 }
 
 export function listOrphans(): void {
@@ -36,9 +40,9 @@ export function listOrphans(): void {
     const deps = (p.depends || '').split(',').map(s => s.trim().split(/\s/)[0]).filter(Boolean);
     for (const d of deps) needed.add(d);
   }
-  for (const p of localdb.getAllPackages()) {
-    if (p.reason === 'dependency' && !needed.has(p.name)) console.log(`${p.name} ${p.version}`);
-  }
+  const pkgs = localdb.getAllPackages().filter(p => p.reason === 'dependency' && !needed.has(p.name));
+  const nameW = Math.min(Math.max(...pkgs.map(p => p.name.length)) + 2, 30);
+  for (const p of pkgs) console.log(`${p.name.padEnd(nameW)}${p.version}`);
 }
 
 export function checkIntegrity(name?: string): void {
@@ -86,31 +90,50 @@ export function showInfo(name: string, fromRepo: boolean): void {
   const our = localdb.getPackage(name);
   const m = !!our;
 
-  console.log(t('info_name', p.package));
-  console.log(t('info_version', p.version));
-  console.log(t('info_description', p.description || ''));
-  console.log(t('info_architecture', p.architecture));
-  console.log(t('info_url', p.homepage || ''));
-  if (m && our) console.log(t(our.reason === 'explicit' ? 'info_install_reason_explicit' : 'info_install_reason_dep'));
-  if (!m) console.log(t('info_install_reason_dpkg'));
-  if (p.depends) console.log(t('info_depends', p.depends));
-  if (p.installedSize) console.log(t('info_installed_size', (p.installedSize / 1024).toFixed(2) + ' KiB'));
-  if (p.maintainer) console.log(t('info_packager', p.maintainer));
+  // Dynamic key alignment for any locale
+  const lines: [string, string][] = [];
+  lines.push(['Name', p.package]);
+  lines.push(['Version', p.version]);
+  lines.push(['Description', p.description || '']);
+  lines.push(['Architecture', p.architecture]);
+  lines.push(['URL', p.homepage || '']);
+  if (m && our) lines.push(['Install Reason', our.reason === 'explicit' ? 'Explicitly installed' : 'Installed as a dependency']);
+  if (!m) lines.push(['Install Reason', 'Installed via dpkg']);
+  if (p.depends) lines.push(['Depends On', p.depends]);
+  if (p.installedSize) lines.push(['Installed Size', (p.installedSize / 1024).toFixed(2) + ' KiB']);
+  if (p.maintainer) lines.push(['Packager', p.maintainer]);
   if (our) {
-    console.log(t('info_files', String(our.files.length)));
-    console.log(t('info_install_date', new Date(our.installTime).toISOString().slice(0, 10)));
+    lines.push(['Files', String(our.files.length)]);
+    lines.push(['Install Date', new Date(our.installTime).toISOString().slice(0, 10)]);
+  }
+
+  // Compute max key width considering CJK (each CJK char ≈ 2 width)
+  const cjk = (s: string) => { let w = 0; for (const c of s) w += c.charCodeAt(0) > 127 ? 2 : 1; return w; };
+  const maxW = Math.max(...lines.map(([k]) => cjk(k)));
+  for (const [k, v] of lines) {
+    const pad = maxW - cjk(k);
+    console.log(`${k}${' '.repeat(pad)} : ${v}`);
   }
 }
 
 export function queryFile(fp: string): void {
   const owner = localdb.getFileOwner(fp);
   if (owner) { console.log(t('file_owned_by', fp, owner)); return; }
-  try {
-    const out = execSync(`dpkg -S ${fp} 2>/dev/null`, { encoding: 'utf8' });
-    console.log(out.trim());
-  } catch {
-    console.error(t('error_no_pkg_owns_file', fp));
+  // Fallback: scan dpkg info files for file ownership
+  const infoDir = '/var/lib/dpkg/info';
+  if (fs.existsSync(infoDir)) {
+    for (const entry of fs.readdirSync(infoDir)) {
+      if (!entry.endsWith('.list')) continue;
+      try {
+        const content = fs.readFileSync(`${infoDir}/${entry}`, 'utf8');
+        if (content.split('\n').some(l => l.trim() === fp)) {
+          console.log(t('file_owned_by', fp, entry.slice(0, -5)));
+          return;
+        }
+      } catch {}
+    }
   }
+  console.error(t('error_no_pkg_owns_file', fp));
 }
 
 export function listFiles(name: string): void {
