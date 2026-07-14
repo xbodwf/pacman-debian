@@ -3,10 +3,17 @@ import { removeByName, removePackages } from '../ops/remove';
 import { listInstalled, showInfo, queryFile, listFiles, listExplicit, listDeps, listOrphans, checkIntegrity } from '../ops/query';
 import { syncAndUpgrade, upgradeOnly } from '../ops/upgrade';
 import { syncRepos, searchRepo, findInRepo, downloadPkg, getPkgUrl, getRepoCache } from '../repo/repository';
+import { loadConfig } from '../repo/config';
+import { log, logError, logSync } from '../core/logger';
 import { initDb, loadDatabase, saveDatabase, getPackage } from '../db/database';
 import { readDpkgStatus } from '../db/dpkg-compat';
-import { setNoConfirm } from '../ui/prompt';
+import { setNoConfirm, confirm } from '../ui/prompt';
 import { t as t_ } from '../i18n';
+
+/** Strip repo/ prefix from target names (yay passes "extra/pkgname") */
+function stripRepo(names: string[]): string[] {
+  return names.map(n => n.includes('/') ? n.split('/').pop()! : n);
+}
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import pkg from '../../package.json';
@@ -27,20 +34,41 @@ function help(): void {
 }
 
 function cleanCache(all: boolean): void {
+  const cfg = loadConfig();
   if (all) {
-    // -Scc: wipe everything
     if (fs.existsSync(CACHE)) { fs.rmSync(CACHE, { recursive: true }); fs.mkdirSync(CACHE, { recursive: true }); }
     if (fs.existsSync(PCACHE)) { fs.rmSync(PCACHE, { recursive: true }); }
     console.log(t_('cache_cleaned_all'));
     return;
   }
-  // -Sc: remove cached .deb/.pkg.tar.zst files only (keep repo index metadata)
   if (!fs.existsSync(PCACHE)) return;
   let removed = 0;
+  const keepFiles = new Set<string>();
+  if (cfg.cleanMethod !== 'KeepCurrent') {
+    const localDir = path.join(cfg.dbPath, 'local');
+    if (fs.existsSync(localDir)) {
+      for (const entry of fs.readdirSync(localDir)) {
+        const dp = path.join(localDir, entry, 'desc');
+        if (!fs.existsSync(dp)) continue;
+        try {
+          const d = JSON.parse(fs.readFileSync(dp, 'utf8'));
+          const n = d.name || d.package;
+          const v = d.version;
+          const a = d.architecture || 'any';
+          if (n && v) {
+            keepFiles.add(`${n}-${v}-${a}.pkg.tar.zst`);
+            keepFiles.add(`${n}-${v}-${a}.pkg.tar.xz`);
+            keepFiles.add(`${n}_${v}_${a}.deb`);
+          }
+        } catch {}
+      }
+    }
+  }
   for (const entry of fs.readdirSync(PCACHE)) {
     const fp = path.join(PCACHE, entry);
     try {
       if (fs.statSync(fp).isFile()) {
+        if (keepFiles.has(entry)) continue;
         fs.unlinkSync(fp);
         removed++;
       }
@@ -126,15 +154,24 @@ export async function parseArgs(args: string[]): Promise<void> {
   if (raw === '--version' || raw === '-V') { console.log(t_('version_string', VERSION)); return; }
   if (raw === '--sync') { needRoot();
     const asdeps = rest.includes('--asdeps');
-    const targets = rest.filter(a => !a.startsWith('-'));
+    const targets = stripRepo(rest.filter(a => !a.startsWith('-')));
     if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
     await installPackages(targets, { ...opts, asdeps });
     return;
   }
   if (raw === '--upgrade') { needRoot();
-    const targets = rest.filter(a => !a.startsWith('-'));
+    const targets = stripRepo(rest.filter(a => !a.startsWith('-')));
     if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
-    for (const t of targets) await installPkg(t, opts);
+    if (targets.length === 1) {
+      await installPkg(targets[0], opts);
+    } else {
+      // Show summary and confirm once, then install all
+      console.log(t_('packages_multi', String(targets.length), targets.map(t => path.basename(t).replace(/\.(pkg\.tar\.(zst|xz|gz)|deb)$/, '')).join('  ')));
+      if (!await confirm(t_('confirm_proceed'))) return;
+      setNoConfirm(true);
+      for (const t of targets) await installPkg(t, opts);
+      setNoConfirm(noconfirm);
+    }
     return;
   }
   if (raw === '--remove') { needRoot();
@@ -241,26 +278,29 @@ export async function parseArgs(args: string[]): Promise<void> {
       return;
     }
     needRoot();
-    if (doRefresh && doUpgrade) { await syncAndUpgrade(opts); return; }
+    if (doRefresh && doUpgrade) { log('operation: sync+upgrade'); await syncAndUpgrade(opts); return; }
     if (doRefresh) {
       process.stdout.write(t_('syncing_databases') + '\n');
+      log('operation: sync');
       await syncRepos(forceRefresh);
       return;
     }
-    if (doUpgrade) { await upgradeOnly(opts); return; }
+    if (doUpgrade) { log('operation: upgrade'); await upgradeOnly(opts); return; }
 
     // -U: install local file
     if (op === 'U') {
       const targets = rest.filter(a => !a.startsWith('-'));
       if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
+      log(`operation: -U ${targets.join(' ')}`);
       for (const t of targets) await installPkg(t, opts);
       return;
     }
 
     // -S: install from repos
     const asdeps = rest.includes('--asdeps');
-    const targets = rest.filter(a => !a.startsWith('-'));
+    const targets = stripRepo(rest.filter(a => !a.startsWith('-')));
     if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
+    log(`operation: -S ${targets.join(' ')}`);
     await installPackages(targets, { ...opts, asdeps });
     return;
   }
@@ -268,6 +308,7 @@ export async function parseArgs(args: string[]): Promise<void> {
   if (op === 'R') {
     const targets = rest.filter(a => !a.startsWith('-'));
     if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
+    log(`operation: -R ${targets.join(' ')}`);
     const flags = raw.slice(2);
     const recursive = flags.includes('s');
     const cascade = flags.includes('c');

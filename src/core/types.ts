@@ -72,6 +72,18 @@ export interface Config {
   architecture: string;
   color: boolean;
   parallelDownloads: number;
+  xferCommand?: string;
+  checkSpace: boolean;
+  ignorePkg: string[];
+  ignoreGroup: string[];
+  noUpgrade: string[];
+  noExtract: string[];
+  verbosePkgLists: boolean;
+  cleanMethod: 'KeepInstalled' | 'KeepCurrent';
+  dbPath: string;
+  cacheDir: string;
+  logFile: string;
+  rootDir: string;
   repos: RepoConfig[];
 }
 

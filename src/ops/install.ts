@@ -6,7 +6,9 @@ import * as net from 'node:net';
 import { execSync } from 'node:child_process';
 import { parseDeb, readScript } from '../core/deb';
 import { extractTar } from '../core/tar';
+import type { ProgressCallback } from '../core/tar';
 import { parsePkgTarZst } from '../core/pkgfile';
+import { logInstall, logError } from '../core/logger';
 import { findInRepo, downloadPkg } from '../repo/repository';
 import { loadConfig } from '../repo/config';
 import {
@@ -23,13 +25,14 @@ import { t } from '../i18n';
 import type { InstalledPackage, RepoPkg } from '../core/types';
 import type { InstallOptions } from '../core/options';
 
-async function installDeb(filePath: string, reason: 'explicit' | 'dependency', opts: InstallOptions = {}): Promise<boolean> {
+async function installDeb(filePath: string, reason: 'explicit' | 'dependency', opts: InstallOptions = {}, onProgress?: ProgressCallback): Promise<boolean> {
   initDb();
   const pkg = parseDeb(filePath);
   const db = loadDatabase();
   removeLinkIfPresent(pkg.control.package);
   const { control } = pkg;
   const existing = getPackage(db, control.package);
+  const _cfg = loadConfig();
 
   if (opts.needed && existing && existing.version === control.version) {
     return false;
@@ -46,7 +49,7 @@ async function installDeb(filePath: string, reason: 'explicit' | 'dependency', o
     runScript(control.package, 'preinst', ['install']);
   }
 
-  const files = extractTar(pkg.dataTar, '/');
+  const files = extractTar(pkg.dataTar, '/', onProgress, _cfg.noExtract, _cfg.noUpgrade);
 
   if (!opts.noscriptlet) {
     const postinst = readScript(pkg, 'postinst');
@@ -89,7 +92,7 @@ function removeLinkIfPresent(pkgName: string): void {
   }
 }
 
-async function installArch(filePath: string, reason: 'explicit' | 'dependency', opts: InstallOptions = {}): Promise<boolean> {
+async function installArch(filePath: string, reason: 'explicit' | 'dependency', opts: InstallOptions = {}, onProgress?: ProgressCallback): Promise<boolean> {
   initDb();
   const data = fs.readFileSync(filePath);
   const { info, install, files: pkgFiles, dataBlocks } = parsePkgTarZst(data);
@@ -117,14 +120,25 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
   }
 
   const files: string[] = [];
-  for (const entry of dataBlocks) {
+  const total = dataBlocks.length;
+  const _archCfg = loadConfig();
+  const matchArch = (p: string, name: string) => p === name || p === '/' + name || (p.endsWith('/*') && name.startsWith(p.slice(0, -1)));
+  for (let i = 0; i < total; i++) {
+    const entry = dataBlocks[i];
     const targetPath = path.resolve('/', entry.name);
     if (!targetPath.startsWith('/')) continue;
     files.push('/' + entry.name);
+    if (_archCfg.noExtract.some(p => matchArch(p, entry.name))) continue;
     if (entry.data) {
       fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-      fs.writeFileSync(targetPath, entry.data, { mode: 0o755 });
+      if (_archCfg.noUpgrade.some(p => matchArch(p, entry.name)) && fs.existsSync(targetPath)) {
+        const bak = targetPath + '.pacnew';
+        fs.writeFileSync(bak, entry.data, { mode: 0o755 });
+      } else {
+        fs.writeFileSync(targetPath, entry.data, { mode: 0o755 });
+      }
     }
+    onProgress?.(i + 1, total, entry.name);
   }
 
   if (!opts.noscriptlet && install?.post_install) {
@@ -161,12 +175,12 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
   return true;
 }
 
-export async function installPkgFile(filePath: string, reason: 'explicit' | 'dependency', opts: InstallOptions = {}): Promise<boolean> {
+export async function installPkgFile(filePath: string, reason: 'explicit' | 'dependency', opts: InstallOptions = {}, onProgress?: ProgressCallback): Promise<boolean> {
   if (opts.print) { console.log(t('would_install', path.basename(filePath))); return true; }
   if (filePath.endsWith('.pkg.tar.zst') || filePath.endsWith('.pkg.tar.xz') || filePath.endsWith('.pkg.tar.gz')) {
-    return installArch(filePath, reason, opts);
+    return installArch(filePath, reason, opts, onProgress);
   }
-  return installDeb(filePath, reason, opts);
+  return installDeb(filePath, reason, opts, onProgress);
 }
 
 function parseFtpUrl(url: string): { host: string; port: number; user: string; pass: string; path: string } {
@@ -314,15 +328,18 @@ export async function installPkg(target: string, opts: InstallOptions = {}): Pro
   }
 
   const cols = process.stdout.columns || 80;
-  const barLen = Math.max(Math.floor((cols - 30) * 0.35), 8);
-  const barDone = '#'.repeat(barLen);
+  const barLen = Math.max(cols - 50, 8);
+  const drawBar = (pct: number) => {
+    const filled = Math.round((pct / 100) * barLen);
+    return `[${'#'.repeat(filled)}${'-'.repeat(barLen - filled)}] ${String(pct).padStart(3)}%`;
+  };
 
   console.log(t('packages_single', fname) + '\n');
   if (!await confirm(t('confirm_proceed'))) return false;
   if (opts.print) { console.log(t('would_install', fname)); return true; }
-  process.stdout.write(t('progress_loading_data', '1', '1', barDone) + '\n');
-  process.stdout.write(t('progress_installing_single', '1', '1', fname, barDone) + '\n');
+  console.log(`(1/1) ${t('progress_loading_files_msg')} ${drawBar(0)}`);
   const result = await installPkgFile(localPath, 'explicit', opts);
+  console.log(`(1/1) installing ${fname} ${drawBar(100)}`);
   if (isUrl) try { fs.unlinkSync(localPath); } catch {}
   return result;
 }
@@ -386,7 +403,24 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   const totalSize = allPkgs.reduce((s, p) => s + (p.size || 0), 0);
   const totalInst = allPkgs.reduce((s, p) => s + ((p.installedSize || 0) * 1024), 0);
 
-  console.log(t('packages_multi', String(allPkgs.length), allPkgs.map(p => p.package).join('  ')) + '\n');
+  const _cfg = loadConfig();
+  if (_cfg.verbosePkgLists) {
+    const cols = process.stdout.columns || 80;
+    const nameW = Math.max(20, Math.floor(cols * 0.3));
+    const verW = Math.max(16, Math.floor(cols * 0.2));
+    const repoW = Math.max(10, Math.floor(cols * 0.15));
+    console.log(t('packages_multi', String(allPkgs.length), ''));
+    console.log(`  ${'Name'.padEnd(nameW)} ${'Version'.padEnd(verW)} ${'Repo'.padEnd(repoW)} Size`);
+    console.log(`  ${'─'.repeat(nameW)} ${'─'.repeat(verW)} ${'─'.repeat(repoW)} ${'─'.repeat(8)}`);
+    for (const p of allPkgs) {
+      const name = p.package.length > nameW ? p.package.slice(0, nameW - 3) + '...' : p.package;
+      const ver = (p.version || '').length > verW ? (p.version || '').slice(0, verW - 3) + '...' : (p.version || '');
+      console.log(`  ${name.padEnd(nameW)} ${ver.padEnd(verW)} ${p.repo.padEnd(repoW)} ${formatBytes(p.size || 0).padStart(8)}`);
+    }
+  } else {
+    console.log(t('packages_multi', String(allPkgs.length), allPkgs.map(p => p.package).join('  ')));
+  }
+  console.log('');
   console.log(t('total_download_size', formatBytes(totalSize).padStart(9)));
   console.log(t('total_installed_size', formatBytes(totalInst).padStart(9)));
   console.log('');
@@ -398,11 +432,14 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     return allPkgs.length;
   }
 
+  // ---- Transaction start ----
+  console.log(t('processing_changes'));
+
   // ---- Download phase ----
   const total = allPkgs.length;
   const cols = process.stdout.columns || 80;
   const parallelN = loadConfig().parallelDownloads || 1;
-  console.log(t('downloading_packages'));
+  console.log(t('retrieving_packages'));
 
   const downloaded: { pkg: RepoPkg; path: string; rate: number }[] = [];
   const startTime = Date.now();
@@ -416,8 +453,12 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   };
 
   const nameWidth = Math.max(25, Math.floor(cols * 0.35));
+  let dlIdx = 0;
 
   const downloadOne = async (p: RepoPkg): Promise<{ pkg: RepoPkg; path: string; rate: number }> => {
+    const idx = ++dlIdx;
+    const digits = String(total).length;
+    const prefix = `(${String(idx).padStart(digits)}/${String(total).padEnd(digits)})`;
     const pkgLabel = `${p.package}-${p.version}-${p.architecture || 'any'}`;
     const displayName = pkgLabel.length > nameWidth ? pkgLabel.slice(0, nameWidth - 3) + '...' : pkgLabel;
     let finalRate = 0, prevTime = Date.now(), prevBytes = 0, smoothRate = 0;
@@ -436,7 +477,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       const etaS = formatETA(eta);
       const pct = tot > 0 ? Math.round(rec / tot * 100) : 0;
       const line = barLine(
-        ` ${displayName.padEnd(nameWidth)} ${dl.val.padStart(6)} ${dl.unit.padEnd(3)}  ${rateStr} ${etaS}  [`,
+        ` ${prefix} ${displayName.padEnd(nameWidth)} ${dl.val.padStart(6)} ${dl.unit.padEnd(3)}  ${rateStr} ${etaS}  [`,
         `] ${String(pct).padStart(3)}%`,
         pct,
       );
@@ -445,7 +486,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
 
     const finalSize = humanSize(p.size || 0, 1);
     const compLine = barLine(
-      ` ${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${formatRate(finalRate)} ${'00:00'}  [`,
+      ` ${prefix} ${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${formatRate(finalRate)} ${'00:00'}  [`,
       `] 100%`,
       100,
     );
@@ -480,7 +521,10 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   process.stdout.write(totalLine + '\n');
 
   // ---- Pre-install checks (after download, matching real pacman order) ----
-  const prefixStr = `(${String(total)}/${String(total)}) `;
+  const totalChk = downloaded.length;
+  const digitsChk = String(totalChk).length;
+  let chkIdx = 0;
+  const prefixChk = () => `(${String(++chkIdx).padStart(digitsChk)}/${String(totalChk).padEnd(digitsChk)})`;
   const checkMessages = [
     t('progress_checking_keys_msg'),
     t('progress_checking_integrity_msg'),
@@ -488,12 +532,13 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     t('progress_checking_conflicts_msg'),
     t('progress_checking_space_msg'),
   ];
-  const maxMsgTw = Math.max(...checkMessages.map(m => terminalWidth(m)));
+  const maxChkMsgTw = Math.max(...checkMessages.map(m => terminalWidth(m)));
 
   const fmtCheck = (msg: string) => {
-    const pad = maxMsgTw - terminalWidth(msg);
+    const p = prefixChk();
+    const pad = maxChkMsgTw - terminalWidth(msg);
     const line = barLine(
-      `${prefixStr}${msg}${' '.repeat(pad)} [`,
+      ` ${p} ${msg}${' '.repeat(pad)} [`,
       `] 100%`,
       100,
     );
@@ -519,7 +564,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   // 3. Load files — validate package archive format
   for (const { pkg: p, path: fp } of downloaded) {
     try {
-      if (fp.endsWith('.deb')) execSync(`dpkg-deb --info "${fp}" 2>/dev/null`, { encoding: 'utf8', timeout: 5000 });
+      if (fp.endsWith('.deb')) { parseDeb(fp); }
       else execSync(`tar -t --zstd -f "${fp}" 2>/dev/null | head -1`, { encoding: 'utf8', timeout: 5000 });
     } catch {
       console.error(`\n  WARNING: ${p.package}: package file appears corrupted`);
@@ -532,18 +577,22 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   fmtCheck(t('progress_checking_conflicts_msg'));
 
   // 5. Available space check
-  try {
-    const df = execSync('df -k /', { encoding: 'utf8', timeout: 5000 });
-    const match = df.trim().split('\n').pop()?.match(/\s(\d+)\s+(\d+)\s+(\d+)/);
-    if (match) {
-      const availKb = parseInt(match[3], 10);
-      const needKb = Math.ceil((allPkgs.reduce((s, p) => s + ((p.installedSize || 0) * 1024), 0)) / 1024);
-      if (availKb < needKb) {
-        console.error(`\n  ERROR: not enough disk space (need ${needKb} KiB, have ${availKb} KiB)`);
-        return 0;
+  const cfg = loadConfig();
+  if (cfg.checkSpace) {
+    try {
+      const dfPath = cfg.rootDir === '/' ? '/' : cfg.rootDir;
+      const df = execSync(`df -k "${dfPath}"`, { encoding: 'utf8', timeout: 5000 });
+      const match = df.trim().split('\n').pop()?.match(/\s(\d+)\s+(\d+)\s+(\d+)/);
+      if (match) {
+        const availKb = parseInt(match[3], 10);
+        const needKb = allPkgs.reduce((s, p) => s + ((p.installedSize || 0)), 0);
+        if (availKb < needKb) {
+          console.error(`\n  error: not enough disk space (need ${(needKb / 1024).toFixed(1)} MiB, have ${(availKb / 1024).toFixed(1)} MiB)`);
+          return 0;
+        }
       }
-    }
-  } catch {}
+    } catch {}
+  }
   fmtCheck(t('progress_checking_space_msg'));
 
   // Install phase (serial for safety)

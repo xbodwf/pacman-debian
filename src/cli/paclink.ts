@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { addPackage, removePackage, getPackage, listPackageNames } from '../db/localdb';
 import { readDpkgStatus } from '../db/dpkg-compat';
+import { addPaclink, removePaclink, writePaclinks, readPaclinks } from '../core/paclinks';
 import type { InstalledPackage } from '../core/types';
 import { scopedT } from '../i18n';
+import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
@@ -137,8 +139,82 @@ async function createLink(debPkg: string, virtName: string, noconfirm: boolean):
     repoType: 'link',
   };
 
+  addPaclink(virtName, debPkg);
   addPackage(linkPkg);
   console.log(t('link_created', virtName, version, debPkg));
+}
+
+async function initLinks(noconfirm: boolean): Promise<void> {
+  const dpkg = readDpkgStatus();
+  const commonMappings: [string, string][] = [
+    ['alsa-lib', 'libasound2'], ['alsa-lib', 'libasound2-dev'],
+    ['at-spi2-core', 'at-spi2-core'],
+    ['ca-certificates-utils', 'ca-certificates'],
+    ['gcc-libs', 'libgcc-s1'], ['gcc-libs', 'libstdc++6'],
+    ['glibc', 'libc6'],
+    ['go', 'golang-go'], ['go', 'golang'], ['go', 'golang-1.23-go'],
+    ['gtk3', 'libgtk-3-0'], ['gtk3', 'libgtk-3-dev'],
+    ['libcap', 'libcap2'], ['libcap', 'libcap-dev'],
+    ['libxcb', 'libxcb1'], ['libxcb', 'libxcb-dev'], ['libxcb', 'libxcb1-dev'],
+    ['libxcb-util', 'libxcb-util1'],
+    ['libdrm', 'libdrm2'], ['libdrm', 'libdrm-dev'],
+    ['libdrm', 'libdrm-amdgpu1'], ['libdrm', 'libdrm-nouveau2'], ['libdrm', 'libdrm-radeon1'],
+    ['libffi', 'libffi8'], ['libffi', 'libffi-dev'],
+    ['libnotify', 'libnotify4'], ['libnotify', 'libnotify-dev'],
+    ['libnspr', 'libnspr4-dev'],
+    ['libpulse', 'libpulse0'], ['libpulse', 'libpulse-dev'],
+    ['libxss', 'libxss1'], ['libxss', 'libxss-dev'],
+    ['libxtst', 'libxtst6'], ['libxtst', 'libxtst-dev'],
+    ['mesa', 'libgl1-mesa-glx'], ['mesa', 'libegl1-mesa'],
+    ['mesa', 'libgles2-mesa'], ['mesa', 'libglapi-mesa'],
+    ['nss', 'libnss3'], ['nss', 'libnss3-dev'],
+    ['nspr', 'libnspr4'], ['nspr', 'libnspr4-dev'],
+    ['p11-kit', 'libp11-kit0'], ['p11-kit', 'libp11-kit-dev'],
+    ['python', 'python3'], ['python', 'python3-minimal'], ['python', 'python3-dev'],
+    ['sqlite', 'libsqlite3-0'], ['sqlite', 'libsqlite3-dev'],
+    ['systemd-libs', 'libsystemd0'],
+  ];
+
+  const created: [string, string][] = [];
+  for (const [virt, deb] of commonMappings) {
+    const debInfo = dpkg.get(deb);
+    if (!debInfo) continue;
+    created.push([virt, deb]);
+  }
+
+  if (created.length === 0) {
+    console.log('No Debian packages found for any common mappings.');
+    return;
+  }
+
+  console.log(`Found ${created.length} installable mappings:`);
+  for (const [virt, deb] of created.slice(0, 10)) console.log(`  ${virt} ← ${deb}`);
+  if (created.length > 10) console.log(`  ... and ${created.length - 10} more`);
+
+  if (!noconfirm) {
+    if (!await confirm(t('confirm_init', String(created.length)) + ' ' + t('confirm_prompt'))) {
+      console.log(t('cancelled'));
+      return;
+    }
+  }
+
+  for (const [virt, deb] of created) {
+    const existing = getPackage(virt);
+    if (!existing || existing.repoType !== 'link') {
+      const debInfo = dpkg.get(deb)!;
+      const linkPkg: InstalledPackage = {
+        name: virt, version: debInfo.version || '0',
+        architecture: debInfo.architecture || process.arch,
+        description: `Virtual package - links to Debian package ${deb}`,
+        provides: virt, depends: deb,
+        installTime: Math.floor(Date.now() / 1000),
+        reason: 'explicit', files: [], repoType: 'link',
+      };
+      addPackage(linkPkg);
+    }
+  }
+  writePaclinks(created.map(([virt, deb]) => ({ virt, deb })));
+  console.log(`Created ${created.length} paclink mappings.`);
 }
 
 async function removeLink(name: string, noconfirm: boolean): Promise<void> {
@@ -157,8 +233,25 @@ async function removeLink(name: string, noconfirm: boolean): Promise<void> {
     }
   }
 
+  removePaclink(name);
   removePackage(name, pkg.version);
   console.log(t('link_removed', name, target));
+
+  if (!noconfirm) {
+    if (await confirm(t('confirm_pacman_remove', name) + ' [y/N] ')) {
+      try {
+        execSync(`pacman -R --noconfirm "${name}" 2>/dev/null`, { stdio: 'inherit', timeout: 60000 });
+      } catch {}
+    }
+    if (target !== '?' && await confirm(t('confirm_apt_remove', target) + ' [y/N] ')) {
+      try {
+        execSync(`apt-get remove -y "${target}" 2>/dev/null`, { stdio: 'inherit', timeout: 120000 });
+        console.log(t('apt_removed', target));
+      } catch (e: any) {
+        console.error(t('apt_remove_failed', target, e.message));
+      }
+    }
+  }
 }
 
 function needRoot(msg: string): void {
@@ -214,6 +307,11 @@ async function main(): Promise<void> {
         process.exit(1);
       }
       showLinkInfo(rest[0]);
+      break;
+
+    case '-I':
+      needRoot('initialize paclink mappings');
+      await initLinks(noconfirm);
       break;
 
     case '-R':

@@ -7,3 +7,4 @@ package-lock.json
 yarn.lock
 lib/pac4deb/*.so
 local/index.json
+.arch/

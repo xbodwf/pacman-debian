@@ -8,11 +8,25 @@ Architecture = auto
 #HookDir     = /etc/pacman.d/hooks/
 HoldPkg     = pacman glibc
 ParallelDownloads = 5
-#CheckSpace
+CheckSpace
 Color
 #VerbosePkgLists
 #DownloadUser = alpm
 
+# Custom download command (replace built-in HTTP with external tool)
+#XferCommand = /usr/bin/curl -L -C - -f -o %o %u
+#XferCommand = /usr/bin/wget --passive-ftp -c -O %o %u
+
+# CleanMethod: KeepInstalled (default) or KeepCurrent
+#CleanMethod = KeepInstalled
+
+# Ignore these packages during upgrade
+#IgnorePkg =
+#IgnoreGroup =
+
+# Protect files from overwrite during install
+#NoUpgrade   =
+#NoExtract   =
+
 SigLevel    = Never
 LocalFileSigLevel = Optional
-#RemoteFileSigLevel = Required

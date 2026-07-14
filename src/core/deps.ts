@@ -1,5 +1,4 @@
 import * as fs from 'node:fs';
-import { execSync } from 'node:child_process';
 import { findInRepo, findProvides, batchFindInRepo } from '../repo/repository';
 import { loadDatabase } from '../db/database';
 import { readDpkgStatus, dpkgHasPackage } from '../db/dpkg-compat';
@@ -48,24 +47,94 @@ export function parseDep(s: string): Dep[] {
   });
 }
 
-/* ---- Version comparison ---- */
-function verCmp(a: string, b: string): number {
-  // Try dpkg compare first
-  try {
-    const out = execSync(`dpkg --compare-versions "${a}" gt "${b}" 2>/dev/null && echo gt || (dpkg --compare-versions "${a}" eq "${b}" 2>/dev/null && echo eq) || echo lt`, { encoding: 'utf8', timeout: 5000 }).trim();
-    if (out === 'gt') return 1;
-    if (out === 'eq') return 0;
-    if (out === 'lt') return -1;
-  } catch {}
+/* ---- Pure dpkg version comparison (no execSync needed) ---- */
+/* Ported from dpkg/lib/dpkg/version.c — verrevcmp + order */
 
-  // Fallback: simple numeric/string comparison
-  const aParts = a.replace(/[^\d.]/g, '').split('.').map(Number);
-  const bParts = b.replace(/[^\d.]/g, '').split('.').map(Number);
-  for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
-    const an = aParts[i] || 0, bn = bParts[i] || 0;
-    if (an !== bn) return an - bn;
+function order(c: string): number {
+  if (c >= '0' && c <= '9') return 0;
+  if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) return c.charCodeAt(0);
+  if (c === '~') return -1;
+  if (c) return c.charCodeAt(0) + 256;
+  return 0;
+}
+
+function verrevcmp(a: string, b: string): number {
+  let ai = 0, bi = 0;
+  while (ai < a.length || bi < b.length) {
+    let firstDiff = 0;
+
+    // Skip non-digit prefixes
+    while ((ai < a.length && !(a[ai] >= '0' && a[ai] <= '9')) ||
+           (bi < b.length && !(b[bi] >= '0' && b[bi] <= '9'))) {
+      const ac = ai < a.length ? order(a[ai]) : 0;
+      const bc = bi < b.length ? order(b[bi]) : 0;
+      if (ac !== bc) return ac - bc;
+      ai++;
+      bi++;
+    }
+
+    // Skip leading zeros
+    while (ai < a.length && a[ai] === '0') ai++;
+    while (bi < b.length && b[bi] === '0') bi++;
+
+    // Compare digit sequences
+    while (ai < a.length && a[ai] >= '0' && a[ai] <= '9' &&
+           bi < b.length && b[bi] >= '0' && b[bi] <= '9') {
+      if (!firstDiff) firstDiff = a.charCodeAt(ai) - b.charCodeAt(bi);
+      ai++;
+      bi++;
+    }
+
+    if (ai < a.length && a[ai] >= '0' && a[ai] <= '9') return 1;
+    if (bi < b.length && b[bi] >= '0' && b[bi] <= '9') return -1;
+    if (firstDiff) return firstDiff;
   }
-  return a.localeCompare(b);
+
+  return 0;
+}
+
+/** Parse "1:2.3-4" → { epoch: 1, version: "2.3", revision: "4" } */
+function parseDpkgVersion(s: string): { epoch: number; version: string; revision: string } {
+  let epoch = 0;
+  let rest = s.trim();
+
+  const colon = rest.indexOf(':');
+  if (colon > 0) {
+    const epochStr = rest.slice(0, colon);
+    if (/^\d+$/.test(epochStr)) {
+      epoch = parseInt(epochStr, 10);
+      rest = rest.slice(colon + 1);
+    }
+  }
+
+  const hyphen = rest.lastIndexOf('-');
+  let version: string, revision: string;
+  if (hyphen > 0) {
+    version = rest.slice(0, hyphen);
+    revision = rest.slice(hyphen + 1);
+  } else {
+    version = rest;
+    revision = '';
+  }
+
+  return { epoch, version, revision };
+}
+
+/**
+ * Compare two dpkg-style version strings.
+ * Returns 1 if a > b, -1 if a < b, 0 if equal.
+ */
+export function verCmp(a: string, b: string): number {
+  const va = parseDpkgVersion(a);
+  const vb = parseDpkgVersion(b);
+
+  if (va.epoch > vb.epoch) return 1;
+  if (va.epoch < vb.epoch) return -1;
+
+  const rc = verrevcmp(va.version, vb.version);
+  if (rc) return rc;
+
+  return verrevcmp(va.revision, vb.revision);
 }
 
 function checkVersion(installed: string, operator: string, required: string): boolean {

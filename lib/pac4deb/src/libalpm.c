@@ -380,6 +380,45 @@ static alpm_list_t *load_dpkg_status(const char *path) {
  	return pkgs;
  }
 
+/* Read paclink mappings from /var/lib/pacman-debian/paclinks.
+   Format: <virt_name> <deb_package_name>, one per line, sorted by virt. */
+static void load_paclinks(alpm_list_t *pkgs) {
+	char path[4096];
+	snprintf(path, sizeof(path), "%s/paclinks", DB_DIR);
+	FILE *fp = fopen(path, "r");
+	if (!fp) return;
+	char line[512];
+	while (fgets(line, sizeof(line), fp)) {
+		if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+		char virt[256] = {0}, deb[256] = {0};
+		if (sscanf(line, "%255s %255s", virt, deb) != 2) continue;
+		for (alpm_list_t *it = pkgs; it; it = it->next) {
+			pkg_internal *p = it->data;
+			if (strcmp(p->name, deb) != 0) continue;
+			if (p->provides && *p->provides) {
+				char tmp[512]; snprintf(tmp, sizeof(tmp), ",%s,", p->provides);
+				char needle[64]; snprintf(needle, sizeof(needle), ",%s,", virt);
+				if (strstr(tmp, needle)) break;
+			}
+			size_t old = p->provides ? strlen(p->provides) : 0;
+			size_t add = strlen(virt);
+			char *nv = malloc(old + add + 3);
+			if (!nv) break;
+			if (p->provides) {
+				memcpy(nv, p->provides, old);
+				nv[old] = ',';
+				memcpy(nv + old + 1, virt, add + 1);
+				free(p->provides);
+			} else {
+				memcpy(nv, virt, add + 1);
+			}
+			p->provides = nv;
+			break;
+		}
+	}
+	fclose(fp);
+}
+
 /* Resolve Debian alternatives: readlink /bin/<cmd> to find real binary,
    then map its package name back to the virtual provide name.
    e.g. /bin/sh -> dash -> add provides "sh" on the dash pkg_internal */
@@ -474,39 +513,7 @@ static void add_alternative_provides(alpm_list_t *pkgs) {
 		}
 	}
 
-	/* Map common Arch package names to Debian equivalents.
-	   These are packages that don't map 1:1 by name but provide equivalent functionality. */
-	static const char *pkg_map[][2] = {
-		{"ca-certificates", "ca-certificates-utils"},
-		{"python3", "python"},
-		{NULL, NULL}
-	};
-	for (int i = 0; pkg_map[i][0]; i++) {
-		for (alpm_list_t *it = pkgs; it; it = it->next) {
-			pkg_internal *p = it->data;
-			if (strcmp(p->name, pkg_map[i][0]) != 0) continue;
-			const char *virt = pkg_map[i][1];
-			if (p->provides && *p->provides) {
-				char tmp[512]; snprintf(tmp, sizeof(tmp), ",%s,", p->provides);
-				char needle[64]; snprintf(needle, sizeof(needle), ",%s,", virt);
-				if (strstr(tmp, needle)) break;
-			}
-			size_t old = p->provides ? strlen(p->provides) : 0;
-			size_t add = strlen(virt);
-			char *nv = malloc(old + add + 3);
-			if (!nv) break;
-			if (p->provides) {
-				memcpy(nv, p->provides, old);
-				nv[old] = ',';
-				memcpy(nv + old + 1, virt, add + 1);
-				free(p->provides);
-			} else {
-				memcpy(nv, virt, add + 1);
-			}
-			p->provides = nv;
-			break;
-		}
-	}
+	load_paclinks(pkgs);
 }
 
 /* Load local database: our packages + dpkg status */

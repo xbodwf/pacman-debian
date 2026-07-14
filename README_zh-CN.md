@@ -4,6 +4,17 @@
 包。它在 dpkg 层面管理包（绕过 APT），同时也支持原生 Arch Linux `.pkg.tar.zst`
 包（通过内置 libalpm 兼容 yay 实现 AUR 支持）。
 
+**v7.4.0 亮点：**
+- **零 dpkg 依赖** — 版本算法内嵌自 libdpkg，dpkg 状态文件直接解析，不调用
+  dpkg 命令
+- **字节索引数据库** — 排序 idx + 二分查找 + JSONL 分块存储
+- **内存缓存** — idx 文件只加载一次，包数据按偏移量缓存
+- **亚百毫秒搜索** — 3000+ 包扫描 + 缓存读取
+- **Release 文件同步** — 先下 InRelease/Release，验证 SHA256 再下 Packages
+- **XferCommand** — 自定义下载命令（aria2c、curl、wget）
+- **Paclink 文件后端** — 映射存储在 `/var/lib/pacman-debian/paclinks`，C 层
+  直接读取，无需重编译
+
 ## 简介
 
 ### 目标

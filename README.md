@@ -5,6 +5,18 @@ operating directly on Debian/Ubuntu `.deb` packages. It manages packages at the
 dpkg level — bypassing APT — and also supports native Arch Linux `.pkg.tar.zst`
 packages (including AUR compatibility via yay with a bundled libalpm).
 
+**Version 7.4.0 highlights:**
+- **Zero dpkg dependency** — version comparison algorithm ported from libdpkg,
+  dpkg status parsed directly, no `dpkg` command required
+- **Byte-indexed database** — sorted idx with binary search, JSONL chunk storage
+- **In-memory cache** — idx files loaded once, package data cached by offset
+- **Sub-100ms search** — across 3000+ packages via idx scan + cached reads
+- **Release-based Debian sync** — fetches `InRelease`/`Release` first, validates
+  SHA256 before downloading Packages (like apt)
+- **XferCommand** — custom download commands (aria2c, curl, wget)
+- **Paclink file backend** — mappings stored in `/var/lib/pacman-debian/paclinks`,
+  C shim reads directly, no recompilation needed for new mappings
+
 ## Introduction
 
 ### Goals

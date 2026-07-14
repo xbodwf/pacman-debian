@@ -120,13 +120,13 @@ export function writeDpkgEntry(pkg: InstalledPackage): void {
 }
 
 function loadFilesFromDpkg(name: string): string[] {
+  const listFile = `/var/lib/dpkg/info/${name}.list`;
   try {
-    const { execSync } = require('node:child_process');
-    const out = execSync(`dpkg -L ${name} 2>/dev/null`, { encoding: 'utf8', timeout: 5000 });
-    return out.trim().split('\n').filter(Boolean);
-  } catch {
-    return [];
-  }
+    if (fs.existsSync(listFile)) {
+      return fs.readFileSync(listFile, 'utf8').split('\n').filter(Boolean);
+    }
+  } catch {}
+  return [];
 }
 
 export function removeDpkgEntry(name: string): void {

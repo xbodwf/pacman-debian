@@ -425,7 +425,17 @@ void *alpm_pkg_get_checkdepends(alpm_pkg_t *p) { (void)p; return NULL; }
 void *alpm_pkg_get_makedepends(alpm_pkg_t *p) { (void)p; return NULL; }
 void *alpm_pkg_get_xdata(alpm_pkg_t *p) { (void)p; return NULL; }
 void *alpm_pkg_get_handle(alpm_pkg_t *p) { (void)p; return NULL; }
-alpm_pkg_t *alpm_pkg_find(void *list, const char *name) { (void)list; (void)name; return NULL; }
+alpm_pkg_t *alpm_pkg_find(void *list, const char *name) { 
+	if (!list || !name) return NULL;
+	alpm_list_t *it;
+	for (it = (alpm_list_t *)list; it; it = it->next) {
+		alpm_pkg_t *p = (alpm_pkg_t *)it->data;
+		if (!p) continue;
+		const char *n = alpm_pkg_get_name(p);
+		if (n && strcmp(n, name) == 0) return p;
+	}
+	return NULL; 
+}
 int alpm_pkg_should_ignore(alpm_handle_t *h, alpm_pkg_t *p) { (void)h; (void)p; return 0; }
 int alpm_pkg_download_size(alpm_pkg_t *p) { (void)p; return 0; }
 int alpm_filelist_contains(void *fl, const char *path) { (void)fl; (void)path; return 0; }

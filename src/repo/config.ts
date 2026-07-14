@@ -9,7 +9,7 @@ function findConfig(): string {
   for (const p of CONFIG_PATHS) {
     if (fs.existsSync(p)) return p;
   }
-  return CONFIG_PATHS[0]; // fallback to default
+  return CONFIG_PATHS[0];
 }
 
 function parseKeyValue(line: string): [string, string] | null {
@@ -39,9 +39,19 @@ function loadRepoFile(filePath: string): Record<string, string> {
   return result;
 }
 
+function strList(v: string): string[] {
+  return v.split(/\s+/).filter(Boolean);
+}
+
 export function loadConfig(): Config {
   const nativeArch = process.arch === 'arm64' ? 'aarch64' : process.arch;
-  const cfg: Config = { architecture: nativeArch, color: false, parallelDownloads: 1, repos: [] };
+  const cfg: Config = {
+    architecture: nativeArch, color: false, parallelDownloads: 1,
+    checkSpace: false, ignorePkg: [], ignoreGroup: [], noUpgrade: [], noExtract: [],
+    verbosePkgLists: false, cleanMethod: 'KeepInstalled',
+    dbPath: '/var/lib/pacman-debian', cacheDir: '/var/cache/pacman-debian',
+    logFile: '', rootDir: '/', repos: [],
+  };
   const configPath = findConfig();
   if (!fs.existsSync(configPath)) {
     cfg.repos.push({ name: 'ubuntu', type: 'debian', server: 'http://ports.ubuntu.com/ubuntu-ports', dist: 'noble', components: ['main', 'universe'] });
@@ -66,7 +76,6 @@ export function loadConfig(): Config {
     }
     const kv = parseKeyValue(t);
     if (!kv) {
-      // Bare boolean flag (no = sign), e.g. "Color"
       const flag = t.trim().toLowerCase();
       if (flag === 'color' && (inOptions || !cur)) cfg.color = true;
       continue;
@@ -76,11 +85,22 @@ export function loadConfig(): Config {
     if (inOptions || !cur) {
       if (k === 'architecture') cfg.architecture = v;
       else if (k === 'paralleldownloads') { const n = parseInt(v, 10); if (!isNaN(n) && n > 0) cfg.parallelDownloads = n; }
+      else if (k === 'xfercommand') cfg.xferCommand = v;
+      else if (k === 'checkspace') cfg.checkSpace = v === 'true' || v === '1' || v === 'yes';
+      else if (k === 'ignorepkg') cfg.ignorePkg = strList(v);
+      else if (k === 'ignoregroup') cfg.ignoreGroup = strList(v);
+      else if (k === 'noupgrade') cfg.noUpgrade = strList(v);
+      else if (k === 'noextract') cfg.noExtract = strList(v);
+      else if (k === 'verbosepkglists') cfg.verbosePkgLists = v === 'true' || v === '1' || v === 'yes';
+      else if (k === 'cleanmethod') cfg.cleanMethod = v === 'KeepCurrent' ? 'KeepCurrent' : 'KeepInstalled';
+      else if (k === 'dbpath') cfg.dbPath = v;
+      else if (k === 'cachedir') cfg.cacheDir = v;
+      else if (k === 'logfile') cfg.logFile = v;
+      else if (k === 'rootdir') cfg.rootDir = v;
       continue;
     }
 
     if (k === 'include') {
-      // Resolve include path (relative to config dir)
       const incPath = v.startsWith('/') ? v : path.join(INCLUDE_DIR, v);
       const included = loadRepoFile(incPath);
       for (const [ik, iv] of Object.entries(included)) {
