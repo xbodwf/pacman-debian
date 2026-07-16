@@ -154,7 +154,7 @@ export async function parseArgs(args: string[]): Promise<void> {
   if (raw === '--version' || raw === '-V') { console.log(t_('version_string', VERSION)); return; }
   if (raw === '--sync') { needRoot();
     const asdeps = rest.includes('--asdeps');
-    const targets = stripRepo(rest.filter(a => !a.startsWith('-')));
+    const targets = rest.filter(a => !a.startsWith('-'));
     if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
     await installPackages(targets, { ...opts, asdeps });
     return;
@@ -169,7 +169,9 @@ export async function parseArgs(args: string[]): Promise<void> {
       console.log(t_('packages_multi', String(targets.length), targets.map(t => path.basename(t).replace(/\.(pkg\.tar\.(zst|xz|gz)|deb)$/, '')).join('  ')));
       if (!await confirm(t_('confirm_proceed'))) return;
       setNoConfirm(true);
-      for (const t of targets) await installPkg(t, opts);
+      for (const t of targets) {
+        if (!await installPkg(t, opts)) throw new Error(`failed to install ${t}`);
+      }
       setNoConfirm(noconfirm);
     }
     return;
@@ -177,7 +179,9 @@ export async function parseArgs(args: string[]): Promise<void> {
   if (raw === '--remove') { needRoot();
     const targets = rest.filter(a => !a.startsWith('-'));
     if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
-    for (const n of targets) await removeByName(n, { recursive: false });
+    for (const n of targets) {
+      if (!await removeByName(n, { recursive: false })) throw new Error(`failed to remove ${n}`);
+    }
     return;
   }
   if (raw === '--query') {
@@ -292,13 +296,15 @@ export async function parseArgs(args: string[]): Promise<void> {
       const targets = rest.filter(a => !a.startsWith('-'));
       if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
       log(`operation: -U ${targets.join(' ')}`);
-      for (const t of targets) await installPkg(t, opts);
+      for (const t of targets) {
+        if (!await installPkg(t, opts)) throw new Error(`failed to install ${t}`);
+      }
       return;
     }
 
     // -S: install from repos
     const asdeps = rest.includes('--asdeps');
-    const targets = stripRepo(rest.filter(a => !a.startsWith('-')));
+    const targets = rest.filter(a => !a.startsWith('-'));
     if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
     log(`operation: -S ${targets.join(' ')}`);
     await installPackages(targets, { ...opts, asdeps });
@@ -316,7 +322,9 @@ export async function parseArgs(args: string[]): Promise<void> {
     const nosave = flags.includes('n');
     const doPrint = flags.includes('p');
     if (!doPrint) needRoot();
-    await removePackages(targets, { recursive, cascade, nodeps, nosave, print: doPrint });
+    if (!await removePackages(targets, { recursive, cascade, nodeps, nosave, print: doPrint })) {
+      throw new Error('remove operation failed');
+    }
     return;
   }
 
@@ -348,7 +356,7 @@ export async function parseArgs(args: string[]): Promise<void> {
     if (flags.includes('d') && flags.includes('t')) { listOrphans(); return; }
     if (flags.includes('d')) { listDeps(); return; }
     if (flags.includes('k')) { checkIntegrity(rest[0]); return; }
-    if (flags.includes('q')) { listInstalled(); return; }
+    if (flags.includes('q')) { listInstalled(undefined, true); return; }
     showInfo(rest[0], false);
     return;
   }

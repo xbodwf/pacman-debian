@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import * as readline from 'node:readline';
 import { execSync } from 'node:child_process';
 import { scopedT } from '../i18n';
+import { acquireDpkgLock, releaseDpkgLock } from '../lock/dpkg-lock';
 
 const t = scopedT('setup');
 
@@ -39,45 +40,6 @@ function needRootSection(): void {
   console.log('');
   console.log(t('need_root_detail'));
 }
-
-function createLink(debPkg: string, virtName: string): boolean {
-  try {
-    execSync(`paclink -Ln "${debPkg}" "${virtName}" --noconfirm`, { stdio: 'pipe', timeout: 10000 });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-const DEFAULT_LINKS: [string, string][] = [
-  ['dash',  'sh'], ['bash',  'sh'],
-  ['python3', 'python'],
-  ['zlib1g', 'zlib'],
-  ['libssl3t64', 'openssl'], ['libssl-dev', 'openssl'],
-  ['libssl3t64', 'libssl'],
-  ['libcurl4t64', 'libcurl'],
-  ['libpcre3', 'libpcre'],
-  ['libpcre2-8-0', 'libpcre2'],
-  ['liblzma5', 'xz'],
-  ['libbz2-1.0', 'bzip2'],
-  ['libzstd1', 'zstd'],
-  ['libgnutls30t64', 'gnutls'],
-  ['libfreetype6', 'freetype2'],
-  ['libpng16-16t64', 'libpng'],
-  ['libjpeg62-turbo', 'libjpeg-turbo'],
-  ['libxml2', 'libxml2'],
-  ['libexpat1', 'expat'],
-  ['libsqlite3-0', 'sqlite'],
-  ['libncursesw6', 'ncurses'],
-  ['libreadline8t64', 'readline'],
-  ['libc6', 'glibc'],
-  ['libgcc-s1', 'gcc-libs'],
-  ['libstdc++6', 'libstdc++'],
-  ['libcrypt1', 'libcrypt'],
-  ['libffi8', 'libffi'],
-  ['libsystemd0', 'systemd-libs'],
-  ['ca-certificates', 'ca-certificates-utils'],
-];
 
 async function handleLink(linkPath: string, target: string): Promise<void> {
   const exists = fs.existsSync(linkPath);
@@ -122,32 +84,8 @@ async function main() {
   // --- Symlink /etc/pacman → /etc/pacman-debian ---
   await handleLink(SYMLINK_PATH, CONFIG_DIR);
 
-  // --- Copy /etc/pacman.conf from /etc/pacman-debian/pacman.conf ---
-  // Symlinks don't work with yay/purego's file existence checks
-  if (!fs.existsSync('/etc/pacman.conf')) {
-    if (await ask('prompt_create_default_config', '/etc/pacman.conf')) {
-      fs.copyFileSync(CONFIG_PATH, '/etc/pacman.conf');
-      console.log(`Created /etc/pacman.conf (copy)`);
-    }
-  } else {
-    try {
-      const stat = fs.lstatSync('/etc/pacman.conf');
-      if (stat.isSymbolicLink()) {
-        const existing = fs.readlinkSync('/etc/pacman.conf');
-        if (existing !== CONFIG_PATH) {
-          console.log(`Symlink /etc/pacman.conf -> ${existing} is wrong target, fixing...`);
-          fs.unlinkSync('/etc/pacman.conf');
-          fs.copyFileSync(CONFIG_PATH, '/etc/pacman.conf');
-          console.log(`Copied /etc/pacman.conf from ${CONFIG_PATH}`);
-        } else {
-          // Replace symlink with a real copy (yay/purego compatibility)
-          fs.unlinkSync('/etc/pacman.conf');
-          fs.copyFileSync(CONFIG_PATH, '/etc/pacman.conf');
-          console.log(`Replaced symlink /etc/pacman.conf with real copy`);
-        }
-      }
-    } catch {}
-  }
+  // --- Symlink /etc/pacman.conf -> /etc/pacman-debian/pacman.conf ---
+  await handleLink('/etc/pacman.conf', CONFIG_PATH);
 
   // --- Default config ---
   if (!fs.existsSync(CONFIG_PATH)) {
@@ -200,6 +138,16 @@ async function main() {
     }
   } else {
     console.log(t('setup_config_exists', CONFIG_PATH));
+  }
+
+  // --- Copy default paclinks.conf if missing ---
+  const paclinksTarget = '/etc/pacman-debian/paclinks.conf';
+  if (!fs.existsSync(paclinksTarget)) {
+    const paclinksSource = path.resolve(__dirname, '../../resources/paclinks.conf');
+    if (fs.existsSync(paclinksSource)) {
+      fs.copyFileSync(paclinksSource, paclinksTarget);
+      console.log(`Created ${paclinksTarget}`);
+    }
   }
 
   // --- Ask to add multilib repo ---
@@ -333,7 +281,8 @@ async function main() {
         `Description: Virtual package provided by pacman-debian`,
         ``,
       ].join('\n');
-      fs.appendFileSync(DPKG_STATUS, '\n' + entry);
+      await acquireDpkgLock();
+      try { fs.appendFileSync(DPKG_STATUS, '\n' + entry); } finally { releaseDpkgLock(); }
       const infoDir = '/var/lib/dpkg/info';
       if (fs.existsSync(infoDir)) fs.writeFileSync(`${infoDir}/pacman.list`, '/usr/local/bin/pacman\n');
       console.log(t('prompt_virtual_pacman_created', pacVersion));
@@ -342,17 +291,14 @@ async function main() {
     console.log(t('prompt_virtual_pacman_exists'));
   }
 
-  // --- Default paclink mappings ---
+  // --- Default paclink mappings (batch via paclink -I) ---
   console.log('');
   console.log(t('setup_default_links'));
-  let linkCount = 0;
-  for (const [debPkg, virtName] of DEFAULT_LINKS) {
-    if (createLink(debPkg, virtName)) {
-      console.log(t('setup_link_created', virtName, debPkg));
-      linkCount++;
-    }
+  try {
+    execSync('paclink -I --noconfirm', { stdio: 'inherit', timeout: 60000 });
+  } catch {
+    console.log(t('setup_link_none'));
   }
-  console.log(linkCount > 0 ? t('setup_link_count', String(linkCount)) : t('setup_link_none'));
 
   console.log('');
   console.log(t('setup_complete'));

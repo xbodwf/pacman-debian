@@ -104,13 +104,14 @@ async function doUpgrade(opts: InstallOptions = {}): Promise<void> {
     const verO = Math.max(14, Math.floor(cols * 0.17));
     const verN = Math.max(14, Math.floor(cols * 0.17));
     console.log(t('packages_multi', String(filtered.length), ''));
-    console.log(`  ${'Name'.padEnd(nameW)} ${'OldVer'.padEnd(verO)} ${'NewVer'.padEnd(verN)} ${'Size'.padStart(8)}`);
-    console.log(`  ${'─'.repeat(nameW)} ${'─'.repeat(verO)} ${'─'.repeat(verN)} ${'─'.repeat(8)}`);
+    console.log(`  ${'Repo'.padEnd(10)} ${'Name'.padEnd(nameW - 11)} ${'OldVer'.padEnd(verO)} ${'NewVer'.padEnd(verN)} ${'Size'.padStart(8)}`);
+    console.log(`  ${'─'.repeat(10)} ${'─'.repeat(nameW - 11)} ${'─'.repeat(verO)} ${'─'.repeat(verN)} ${'─'.repeat(8)}`);
     for (const t_ of filtered) {
-      const n = t_.name.length > nameW ? t_.name.slice(0, nameW - 3) + '...' : t_.name;
+      const r = (t_.pkg.repo || '').slice(0, 9).padEnd(10);
+      const n = t_.name.length > nameW - 12 ? t_.name.slice(0, nameW - 15) + '...' : t_.name;
       const o = t_.oldVer.length > verO ? t_.oldVer.slice(0, verO - 3) + '...' : t_.oldVer;
       const v = t_.newVer.length > verN ? t_.newVer.slice(0, verN - 3) + '...' : t_.newVer;
-      console.log(`  ${n.padEnd(nameW)} ${o.padEnd(verO)} ${v.padEnd(verN)} ${formatBytes(t_.pkg.size || 0).padStart(8)}`);
+      console.log(`  ${r} ${n.padEnd(nameW - 11)} ${o.padEnd(verO)} ${v.padEnd(verN)} ${formatBytes(t_.pkg.size || 0).padStart(8)}`);
     }
   } else {
     console.log(t('packages_multi', String(filtered.length), filtered.map(t_ => `${t_.name} ${t_.oldVer} -> ${t_.newVer}`).join('  ')));
@@ -136,7 +137,7 @@ async function doUpgrade(opts: InstallOptions = {}): Promise<void> {
     console.log(t('progress_checking_integrity', String(i + 1), String(filtered.length), ''));
     console.log(t('progress_loading_files', String(i + 1), String(filtered.length), ''));
     console.log(t('progress_upgrading', String(i + 1), String(filtered.length), t_.name));
-    await installPkgFile(localPath, 'explicit', opts);
+    await installPkgFile(localPath, 'explicit', { ...opts, repo: rp.repo });
   }
 }
 

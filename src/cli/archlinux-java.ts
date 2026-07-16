@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 
 function getJvmDir(): string {
@@ -31,22 +31,46 @@ function getCurrentJava(): string | null {
   }
 }
 
-function setJava(name: string): void {
+function requireRoot(): void {
+  if (process.getuid && process.getuid() !== 0) {
+    console.error('error: must be root to change the default Java environment (try: sudo archlinux-java set <name>)');
+    process.exit(1);
+  }
+}
+
+function commandError(error: unknown): string {
+  const e = error as { stderr?: Buffer | string; message?: string };
+  const stderr = e.stderr?.toString().trim();
+  if (stderr) return stderr;
+  return e.message || 'command failed';
+}
+
+function setJava(name: string): boolean {
   const dir = `${getJvmDir()}/${name}`;
   const javaBin = `${dir}/bin/java`;
   if (!fs.existsSync(javaBin)) {
     console.error(`error: '${name}' is not a valid Java environment`);
-    process.exit(1);
+    return false;
   }
-  execSync(`update-alternatives --install /usr/bin/java java ${javaBin} 25000`, { stdio: 'pipe' });
-  execSync(`update-alternatives --set java ${javaBin}`, { stdio: 'pipe' });
+  try {
+    execFileSync('update-alternatives', ['--install', '/usr/bin/java', 'java', javaBin, '25000'], { stdio: 'pipe' });
+    execFileSync('update-alternatives', ['--set', 'java', javaBin], { stdio: 'pipe' });
+  } catch (error) {
+    console.error(`error: failed to set '${name}': ${commandError(error)}`);
+    return false;
+  }
   console.log(`'${name}' has been set as the default Java environment`);
+  return true;
 }
 
-function unsetJava(): void {
+function unsetJava(): boolean {
   try {
     execSync('update-alternatives --remove java /usr/lib/jvm/*/bin/java', { stdio: 'pipe' });
-  } catch {}
+    return true;
+  } catch (error) {
+    console.error(`error: failed to unset the default Java environment: ${commandError(error)}`);
+    return false;
+  }
 }
 
 function fixDefault(): string | null {
@@ -57,8 +81,7 @@ function fixDefault(): string | null {
   if (jvms.length === 0) return null;
 
   // Set first available JVM as default
-  setJava(jvms[0]);
-  return jvms[0];
+  return setJava(jvms[0]) ? jvms[0] : null;
 }
 
 function cmdStatus(): void {
@@ -98,15 +121,16 @@ function main() {
     case 'get': cmdGet(); break;
     case 'set':
       if (!args[1]) { console.error('error: missing argument for set'); process.exit(1); }
-      setJava(args[1]);
+      requireRoot();
+      if (!setJava(args[1])) process.exit(1);
       break;
     case 'unset':
-      if (process.getuid && process.getuid() !== 0) { console.error('error: must be root'); process.exit(1); }
-      unsetJava();
+      requireRoot();
+      if (!unsetJava()) process.exit(1);
       break;
     case 'fix':
       if (process.getuid && process.getuid() !== 0) { console.error('error: must be root'); process.exit(1); }
-      fixDefault();
+      if (!fixDefault()) process.exit(1);
       break;
     default:
       console.error(`error: unknown subcommand '${args[0]}'`);

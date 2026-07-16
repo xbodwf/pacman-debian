@@ -63,7 +63,8 @@ typedef enum _alpm_errno_t {
 	ALPM_ERR_SERVER_BAD_URL = 17,
 	ALPM_ERR_TRANS_NOT_NULL = 18,
 	ALPM_ERR_TRANS_NULL = 19,
-	ALPM_ERR_PKG_INVALID = 20,
+ ALPM_ERR_PKG_INVALID = 20,
+	ALPM_ERR_UNSUPPORTED = 21,
 } alpm_errno_t;
 
 /* Capabilities */

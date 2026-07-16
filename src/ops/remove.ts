@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { initDb, loadDatabase, saveDatabase, removePkg, getPackage, runScript } from '../db/database';
 import { removeDpkgEntry } from '../db/dpkg-compat';
+import { acquireDpkgLock, releaseDpkgLock } from '../lock/dpkg-lock';
 import { confirm } from '../ui/prompt';
 import type { RemoveOptions } from '../core/options';
 import type { Database } from '../core/types';
@@ -126,7 +127,7 @@ function collectRemoveSet(target: string, opts: RemoveOptions, db: Database): st
   return [...toRemove].reverse(); // reverse so leaf deps are removed first
 }
 
-function removeSingle(name: string, opts: RemoveOptions = {}): boolean {
+async function removeSingle(name: string, opts: RemoveOptions = {}, onPkgProgress?: (done: number, total: number) => void): Promise<boolean> {
   initDb();
   const db = loadDatabase();
   const pkg = getPackage(db, name);
@@ -145,6 +146,8 @@ function removeSingle(name: string, opts: RemoveOptions = {}): boolean {
     }
   }
 
+  await acquireDpkgLock();
+  try {
   for (const n of toRemove) {
     const p = getPackage(db, n);
     if (!p) continue;
@@ -154,9 +157,13 @@ function removeSingle(name: string, opts: RemoveOptions = {}): boolean {
     // If nosave=false (no -n flag), back up conffiles before deletion
     const conffiles = new Set(!opts.nosave ? getConffiles(n) : []);
 
+    const totalFiles = p.files.length;
+    let doneFiles = 0;
     for (const f of p.files) {
       try {
         if (fs.existsSync(f)) {
+          const owner = db.fileIndex.get(f);
+          if (owner && owner !== n) { doneFiles++; onPkgProgress?.(doneFiles, totalFiles); continue; }
           const s = fs.lstatSync(f);
           if (s.isDirectory()) { try { fs.rmdirSync(f); } catch {} }
           else {
@@ -169,18 +176,22 @@ function removeSingle(name: string, opts: RemoveOptions = {}): boolean {
           }
         }
       } catch {}
+      doneFiles++;
+      if (onPkgProgress) onPkgProgress(doneFiles, totalFiles);
     }
 
     if (!opts.noscriptlet) runScript(n, 'postrm', ['remove']);
 
-    try { removeDpkgEntry(n); } catch {}
+    try { await removeDpkgEntry(n); } catch {}
     removePkg(db, n);
+
     // 暴力清理：确保目录被删（removePkg 有时不生效）
     purgeLocalDir(n);
   }
 
   saveDatabase(db);
   return true;
+  } finally { releaseDpkgLock(); }
 }
 
 export async function removeByName(name: string, opts: RemoveOptions = {}): Promise<boolean> {
@@ -212,26 +223,37 @@ export async function removeByName(name: string, opts: RemoveOptions = {}): Prom
   console.log(`Packages (${toRemove.length}): ${toRemove.join('  ')}`);
   console.log('');
 
-  if (!await confirm(':: Proceed with removal?', false)) return false;
+  if (!await confirm(':: Proceed with removal?', false)) return true;
 
   if (opts.recursive || opts.cascade) {
     const cols = process.stdout.columns || 80;
-    for (let i = 0; i < toRemove.length; i++) {
-      const n = toRemove[i];
-      const p = getPackage(db, n);
-      if (!p) continue;
-      const bar = '#'.repeat(Math.max(Math.floor((cols - 45) * 0.35), 8));
-      const ver = p.version;
-      const pname = `${n}-${ver}`;
-      process.stdout.write(`(${i + 1}/${toRemove.length}) removing ${pname.padEnd(Math.max(20, cols - 60))}${bar} 100%\n`);
-      // Skip dep check — already verified in collectRemoveSet / removeByName
-      removeSingle(n, { ...opts, recursive: false, cascade: false, nodeps: true });
+    const barLen = Math.max((cols - 55), 5);
+    await acquireDpkgLock();
+    try {
+      for (let i = 0; i < toRemove.length; i++) {
+        const n = toRemove[i];
+        const p = getPackage(db, n);
+        if (!p) continue;
+        const pname = `${n}-${p.version}`;
+        const fmtLine = (pct: number) => {
+          const filled = Math.round((pct / 100) * barLen);
+          const bar = '#'.repeat(filled) + '-'.repeat(barLen - filled);
+          return `(${i + 1}/${toRemove.length}) removing ${pname.padEnd(Math.max(20, cols - 65))} [${bar}] ${String(pct).padStart(3)}%`;
+        };
+        process.stdout.write(fmtLine(0));
+        const removed = await removeSingle(n, { ...opts, recursive: false, cascade: false, nodeps: true },
+          (done, total) => { process.stdout.write('\r\x1b[K' + fmtLine(Math.round(done / total * 100))); });
+        if (!removed) return false;
+        process.stdout.write('\r\x1b[K' + fmtLine(100) + '\n');
+      }
+    } finally {
+      releaseDpkgLock();
     }
     console.log(t('pkg_removed', name));
     return true;
   }
 
-  const result = removeSingle(name, opts);
+  const result = await removeSingle(name, opts);
   if (!result) return false;
   console.log(t('pkg_removed', name));
   return true;
@@ -275,17 +297,30 @@ export async function removePackages(names: string[], opts: RemoveOptions = {}):
   console.log(`Packages (${list.length}): ${list.join('  ')}`);
   console.log('');
 
-  if (!await confirm(':: Proceed with removal?', false)) return false;
+  if (!await confirm(':: Proceed with removal?', false)) return true;
 
-  for (let i = 0; i < list.length; i++) {
-    const n = list[i];
-    const p = getPackage(db, n);
-    if (!p) continue;
-    if (list.length > 1) {
-      const bar = '#'.repeat(Math.max(Math.floor(((process.stdout.columns || 80) - 45) * 0.35), 8));
-      process.stdout.write(`(${i + 1}/${list.length}) removing ${`${n}-${p.version}`.padEnd(Math.max(20, (process.stdout.columns || 80) - 60))}${bar} 100%\n`);
+  const cols = process.stdout.columns || 80;
+  const barLen = Math.max((cols - 55), 5);
+  await acquireDpkgLock();
+  try {
+    for (let i = 0; i < list.length; i++) {
+      const n = list[i];
+      const p = getPackage(db, n);
+      if (!p) continue;
+      const pname = `${n}-${p.version}`;
+      const fmtLine = (pct: number) => {
+        const filled = Math.round((pct / 100) * barLen);
+        const bar = '#'.repeat(filled) + '-'.repeat(barLen - filled);
+        return `(${i + 1}/${list.length}) removing ${pname.padEnd(Math.max(20, cols - 65))} [${bar}] ${String(pct).padStart(3)}%`;
+      };
+      if (list.length > 1) process.stdout.write(fmtLine(0));
+      const removed = await removeSingle(n, { ...opts, recursive: false, cascade: false, nodeps: true },
+        (done, total) => { process.stdout.write('\r\x1b[K' + fmtLine(Math.round(done / total * 100))); });
+      if (!removed) return false;
+      if (list.length > 1) process.stdout.write('\r\x1b[K' + fmtLine(100) + '\n');
     }
-    removeSingle(n, { ...opts, recursive: false, cascade: false, nodeps: true });
+  } finally {
+    releaseDpkgLock();
   }
 
   if (list.length === 1) console.log(t('pkg_removed', list[0]));
