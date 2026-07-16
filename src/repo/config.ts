@@ -4,6 +4,7 @@ import type { Config, RepoConfig } from '../core/types';
 
 const CONFIG_PATHS = ['/etc/pacman-debian/pacman.conf', '/etc/pacman/pacman.conf', '/etc/pacman.conf'];
 const INCLUDE_DIR = '/etc/pacman-debian';
+const ADVANCED_CONFIG = '/etc/pacman-debian/pacman-advanced.conf';
 
 function findConfig(): string {
   for (const p of CONFIG_PATHS) {
@@ -50,12 +51,12 @@ export function loadConfig(): Config {
     checkSpace: false, ignorePkg: [], ignoreGroup: [], noUpgrade: [], noExtract: [],
     verbosePkgLists: false, cleanMethod: 'KeepInstalled',
     dbPath: '/var/lib/pacman-debian', cacheDir: '/var/cache/pacman-debian',
-    logFile: '', rootDir: '/', repos: [],
+    logFile: '', rootDir: '/', repos: [], notFindDepsFromCurrentRepo: false,
   };
   const configPath = findConfig();
   if (!fs.existsSync(configPath)) {
     cfg.repos.push({ name: 'ubuntu', type: 'debian', server: 'http://ports.ubuntu.com/ubuntu-ports', dist: 'noble', components: ['main', 'universe'] });
-    return cfg;
+    return applyAdvancedConfig(cfg);
   }
 
   const content = fs.readFileSync(configPath, 'utf8');
@@ -78,12 +79,13 @@ export function loadConfig(): Config {
     if (!kv) {
       const flag = t.trim().toLowerCase();
       if (flag === 'color' && (inOptions || !cur)) cfg.color = true;
+      else if (flag === 'verbosepkglists' && (inOptions || !cur)) cfg.verbosePkgLists = true;
       continue;
     }
     const [k, v] = kv;
 
     if (inOptions || !cur) {
-      if (k === 'architecture') cfg.architecture = v;
+      if (k === 'architecture') cfg.architecture = v === 'auto' ? nativeArch : v;
       else if (k === 'paralleldownloads') { const n = parseInt(v, 10); if (!isNaN(n) && n > 0) cfg.parallelDownloads = n; }
       else if (k === 'xfercommand') cfg.xferCommand = v;
       else if (k === 'checkspace') cfg.checkSpace = v === 'true' || v === '1' || v === 'yes';
@@ -113,5 +115,23 @@ export function loadConfig(): Config {
   }
 
   if (cur) { if (!cur.type) cur.type = 'debian'; cfg.repos.push(cur); }
+  return applyAdvancedConfig(cfg);
+}
+
+/**
+ * Parse pacman-debian-only options from the optional advanced config.
+ * The option is presence-based: a bare name means true, while an explicit
+ * false value disables it. No template is created for this file.
+ */
+function applyAdvancedConfig(cfg: Config): Config {
+  if (!fs.existsSync(ADVANCED_CONFIG)) return cfg;
+  for (const line of fs.readFileSync(ADVANCED_CONFIG, 'utf8').split('\n')) {
+    const text = line.replace(/#.*/, '').trim();
+    if (!text) continue;
+    const match = text.match(/^([^=\s]+)(?:\s*=\s*(.*))?$/);
+    if (!match || match[1].toLowerCase() !== 'notfinddepsfromcurrentrepo') continue;
+    const value = match[2]?.trim().toLowerCase();
+    cfg.notFindDepsFromCurrentRepo = value === undefined || !['false', 'no', '0', 'off'].includes(value);
+  }
   return cfg;
 }

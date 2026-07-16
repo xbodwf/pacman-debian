@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as https from 'node:https';
 import * as http from 'node:http';
 import * as zlib from 'node:zlib';
+import * as crypto from 'node:crypto';
 import { spawnSync, execSync } from 'node:child_process';
 
 import { loadConfig } from './config';
@@ -19,6 +20,30 @@ import { log, logError, logSync } from '../core/logger';
 const CACHE_DIR = '/var/cache/pacman-debian';
 const PKG_CACHE = path.join(CACHE_DIR, 'packages');
 const DEB_CACHE = path.join(CACHE_DIR, 'pkg');
+const activePartials = new Set<string>();
+let partialCleanupInstalled = false;
+
+function installPartialCleanup(): void {
+  if (partialCleanupInstalled) return;
+  partialCleanupInstalled = true;
+  process.once('SIGINT', () => {
+    for (const file of activePartials) {
+      try { fs.unlinkSync(file); } catch {}
+    }
+    process.exit(130);
+  });
+}
+
+async function atomicWrite(filePath: string, content: string): Promise<void> {
+  const tmp = `${filePath}.tmp-${process.pid}`;
+  try {
+    await fs.promises.writeFile(tmp, content, 'utf8');
+    await fs.promises.rename(tmp, filePath);
+  } catch (error) {
+    try { await fs.promises.unlink(tmp); } catch {}
+    throw error;
+  }
+}
 
 /* ---- Shared keep-alive HTTP agents ---- */
 const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 8 });
@@ -62,7 +87,9 @@ function parseIdxLine(line: string): IdxLineInfo | null {
   const beforeProv = thirdLastTab >= 0 ? rest.slice(0, thirdLastTab) : rest;
   const firstSpace = beforeProv.indexOf(' ');
   const pkgName = beforeProv.slice(0, firstSpace);
-  const version = firstSpace >= 0 ? beforeProv.slice(firstSpace + 1).trim() : '';
+  const versionText = firstSpace >= 0 ? beforeProv.slice(firstSpace + 1) : '';
+  const firstTab = versionText.indexOf('\t');
+  const version = (firstTab >= 0 ? versionText.slice(0, firstTab) : versionText).trim();
   return { pkgName, version, provides, chunkFile, offset };
 }
 
@@ -200,7 +227,13 @@ function parseReleaseSha256(text: string): Map<string, string> {
   return map;
 }
 
+function debArch(arch: string): string {
+  const map: Record<string, string> = { aarch64: 'arm64', x86_64: 'amd64', x64: 'amd64', i686: 'i386' };
+  return map[arch] || arch;
+}
+
 async function syncDebian(repo: RepoConfig, arch: string, ifModifiedSince?: string, onProgress?: (rec: number, tot: number) => void): Promise<{ pkgs: RepoPkg[]; size: number; notModified: boolean }> {
+  arch = debArch(arch);
   const comps = repo.components || ['main'];
   const pkgDir = path.join(PKG_CACHE, repo.name);
   let info: Record<string, any> = {};
@@ -213,11 +246,15 @@ async function syncDebian(repo: RepoConfig, arch: string, ifModifiedSince?: stri
   // Download Release file first (like apt does)
   const releaseBase = `${repo.server}/dists/${repo.dist}`;
   let releaseText: string | null = null;
+  let releaseSize = 0;
   for (const rfile of ['InRelease', 'Release']) {
     try {
-      const releaseBuf = await downloadFile(`${releaseBase}/${rfile}`, undefined, ifModifiedSince);
-      if (releaseBuf === null) return { pkgs: [], size: 0, notModified: true }; // 304
+      const releaseBuf = await downloadFile(`${releaseBase}/${rfile}`, (rec, tot) => {
+        if (onProgress) onProgress(rec, tot);
+      }, ifModifiedSince);
+      if (releaseBuf === null) return { pkgs: [], size: 0, notModified: true };
       releaseText = releaseBuf.toString('utf8');
+      releaseSize = releaseBuf.length;
       break;
     } catch {}
   }
@@ -225,7 +262,7 @@ async function syncDebian(repo: RepoConfig, arch: string, ifModifiedSince?: stri
 
   const sha256Map = parseReleaseSha256(releaseText);
   const all: RepoPkg[] = [];
-  let totalSize = 0;
+  let totalSize = releaseSize;
   let anyData = false;
   const newSha256: Record<string, string> = {};
 
@@ -257,15 +294,27 @@ async function syncDebian(repo: RepoConfig, arch: string, ifModifiedSince?: stri
     ifModifiedSince = undefined;
   }
 
-  // Save SHA256 info
-  info.sha256 = newSha256;
-  info.total = all.length;
-  try {
-    fs.mkdirSync(pkgDir, { recursive: true });
-    fs.writeFileSync(infoFile, JSON.stringify(info));
-  } catch {}
+  // Save SHA256 info only if anything was downloaded
+  if (anyData) {
+    info.sha256 = newSha256;
+    info.total = all.length;
+    try {
+      fs.mkdirSync(pkgDir, { recursive: true });
+      fs.writeFileSync(infoFile, JSON.stringify(info));
+    } catch {}
+  }
 
-  return { pkgs: all, size: totalSize, notModified: !anyData && ifModifiedSince !== undefined };
+  // If idx is empty but Release was fresh → force re-download next time
+  if (!anyData && all.length === 0) {
+    const idxPath = path.join(pkgDir, 'packages.idx');
+    if (!fs.existsSync(idxPath) || fs.statSync(idxPath).size < 10) {
+      // Clear cached SHA256 so next sync forces Packages download
+      delete info.sha256;
+      try { fs.writeFileSync(infoFile, JSON.stringify(info)); } catch {}
+    }
+  }
+
+  return { pkgs: all, size: totalSize, notModified: !anyData };
 }
 
 function parseArchDb(dbTar: Buffer, repo: string): RepoPkg[] {
@@ -507,7 +556,7 @@ export async function syncRepos(force: boolean = false): Promise<void> {
         const chunk = pkgs.slice(c * CHUNK, (c + 1) * CHUNK);
         const lines = chunk.map(p => JSON.stringify(p)).join('\n');
         const fname = `${String(c).padStart(5, '0')}.jsonl`;
-        writeTasks.push(fs.promises.writeFile(path.join(pkgDir, fname), lines + '\n'));
+        writeTasks.push(atomicWrite(path.join(pkgDir, fname), lines + '\n'));
         // Build index with byte offsets (computed from previous chunk lengths)
         let offset = 0;
         for (let pi = 0; pi < chunk.length; pi++) {
@@ -521,11 +570,11 @@ export async function syncRepos(force: boolean = false): Promise<void> {
         }
       }
       await Promise.all(writeTasks);
-      await fs.promises.writeFile(path.join(pkgDir, '.info'), JSON.stringify({ total: pkgs.length, chunks, chunkSize: CHUNK }));
+       await atomicWrite(path.join(pkgDir, '.info'), JSON.stringify({ total: pkgs.length, chunks, chunkSize: CHUNK }));
       // Remove legacy all.json
       try { fs.unlinkSync(path.join(pkgDir, 'all.json')); } catch {}
       idxLines.sort(); // global sort so binary search works
-      await fs.promises.writeFile(path.join(pkgDir, 'packages.idx'), idxLines.join('\n') + '\n');
+       await atomicWrite(path.join(pkgDir, 'packages.idx'), idxLines.join('\n') + '\n');
 
 
       // Final line
@@ -672,6 +721,23 @@ export function findProvides(name: string): RepoPkg | undefined {
   return undefined;
 }
 
+/** Look up a virtual provider in one repository only. */
+export function findProvidesScoped(repoName: string, name: string): RepoPkg | undefined {
+  const cfg = loadConfig();
+  const repo = cfg.repos.find(r => r.name === repoName);
+  if (!repo) return undefined;
+  const idxEntry = getIdx(repo.name);
+  if (!idxEntry) return undefined;
+  const entries = idxEntry.providesIndex.get(name);
+  if (!entries) return undefined;
+  const pkgDir = path.join(PKG_CACHE, repo.name);
+  for (const e of entries) {
+    const p = readPkgAt(pkgDir, e.chunkFile, e.offset);
+    if (p) return p;
+  }
+  return undefined;
+}
+
 // ---- Cache ----
 let _cache: RepoPkg[] | null = null;
 
@@ -714,7 +780,8 @@ export function invalidateCache(): void {
 }
 
 export function searchRepo(query: string): RepoPkg[] {
-  const lq = query.toLowerCase();
+  const sl = query.indexOf('/');
+  const lq = (sl > 0 ? query.slice(sl + 1) : query).toLowerCase();
   const results: RepoPkg[] = [];
   const cfg = loadConfig();
   const seen = new Set<string>();
@@ -745,6 +812,8 @@ export function searchRepo(query: string): RepoPkg[] {
 }
 
 export function findInRepo(pkgName: string): RepoPkg | undefined {
+  const sl = pkgName.indexOf('/');
+  if (sl > 0) return findInRepoScoped(pkgName.slice(0, sl), pkgName.slice(sl + 1));
   const cfg = loadConfig();
   for (const repo of cfg.repos) {
     const idxEntry = getIdx(repo.name);
@@ -775,6 +844,60 @@ export function findInRepo(pkgName: string): RepoPkg | undefined {
   return undefined;
 }
 
+/** Search only in a specific repo by name (e.g. "extra", "trixie"). */
+export function findInRepoScoped(repoName: string, pkgName: string): RepoPkg | undefined {
+  const cfg = loadConfig();
+  const repo = cfg.repos.find(r => r.name === repoName);
+  if (!repo) return undefined;
+  const idxEntry = getIdx(repo.name);
+  if (!idxEntry) return undefined;
+  const { lines } = idxEntry;
+  const pkgDir = path.join(PKG_CACHE, repo.name);
+  let lo = 0, hi = lines.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const line = lines[mid];
+    const pname = line.slice(0, line.indexOf(' '));
+    if (pkgName < pname) hi = mid - 1;
+    else if (pkgName > pname) lo = mid + 1;
+    else {
+      const info = parseIdxLine(line);
+      if (!info) return undefined;
+      const cacheKey = `${info.chunkFile}:${info.offset}`;
+      let p = _pkgCache.get(cacheKey);
+      if (!p) {
+        p = readPkgAt(pkgDir, info.chunkFile, info.offset);
+        if (p) _pkgCache.set(cacheKey, p);
+      }
+      return p;
+    }
+  }
+  return undefined;
+}
+
+/** Find an exact package version, respecting repository order or a scope. */
+export function findInRepoVersioned(pkgName: string, version: string, repoName?: string): RepoPkg | undefined {
+  const cfg = loadConfig();
+  const repos = repoName ? cfg.repos.filter(r => r.name === repoName) : cfg.repos;
+  for (const repo of repos) {
+    const idxEntry = getIdx(repo.name);
+    if (!idxEntry) continue;
+    const pkgDir = path.join(PKG_CACHE, repo.name);
+    for (const line of idxEntry.lines) {
+      const info = parseIdxLine(line);
+      if (!info || info.pkgName !== pkgName) continue;
+      const cacheKey = `${info.chunkFile}:${info.offset}`;
+      let p = _pkgCache.get(cacheKey);
+      if (!p) {
+        p = readPkgAt(pkgDir, info.chunkFile, info.offset);
+        if (p) _pkgCache.set(cacheKey, p);
+      }
+      if (p && p.package === pkgName && p.version === version) return p;
+    }
+  }
+  return undefined;
+}
+
 /** Resolve the download URL for a package. */
 export function getPkgUrl(rp: RepoPkg): string {
   const cfg = loadConfig();
@@ -793,13 +916,31 @@ export async function downloadPkg(rp: RepoPkg, dest?: string, onProgress?: (rec:
   if (!fs.existsSync(DEB_CACHE)) fs.mkdirSync(DEB_CACHE, { recursive: true });
   const fn = path.basename(rp.filename);
   const local = path.join(dest || DEB_CACHE, fn);
-  if (fs.existsSync(local)) return local;
+  if (fs.existsSync(local)) {
+    if (!rp.sha256) return local;
+    try {
+      const hash = crypto.createHash('sha256').update(fs.readFileSync(local)).digest('hex');
+      if (hash === rp.sha256) return local;
+      fs.unlinkSync(local);
+    } catch {}
+  }
 
   const url = getPkgUrl(rp);
+  const partial = `${local}.part`;
+  try { fs.unlinkSync(partial); } catch {}
+  installPartialCleanup();
+  activePartials.add(partial);
   // Stream directly to file instead of buffering in memory
-  const data = await downloadFile(url, onProgress, undefined, local);
-  if (data === null) return local; // streamed to file
-  // Fallback: write buffer (for XferCommand without dest)
-  if (data) fs.writeFileSync(local, data);
+  try {
+    const data = await downloadFile(url, onProgress, undefined, partial);
+    if (data === null) fs.renameSync(partial, local);
+    else if (data) fs.writeFileSync(partial, data);
+    if (data) fs.renameSync(partial, local);
+  } catch (error) {
+    try { fs.unlinkSync(partial); } catch {}
+    throw error;
+  } finally {
+    activePartials.delete(partial);
+  }
   return local;
 }

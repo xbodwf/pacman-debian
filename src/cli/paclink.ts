@@ -146,34 +146,24 @@ async function createLink(debPkg: string, virtName: string, noconfirm: boolean):
 
 async function initLinks(noconfirm: boolean): Promise<void> {
   const dpkg = readDpkgStatus();
-  const commonMappings: [string, string][] = [
-    ['alsa-lib', 'libasound2'], ['alsa-lib', 'libasound2-dev'],
-    ['at-spi2-core', 'at-spi2-core'],
-    ['ca-certificates-utils', 'ca-certificates'],
-    ['gcc-libs', 'libgcc-s1'], ['gcc-libs', 'libstdc++6'],
-    ['glibc', 'libc6'],
-    ['go', 'golang-go'], ['go', 'golang'], ['go', 'golang-1.23-go'],
-    ['gtk3', 'libgtk-3-0'], ['gtk3', 'libgtk-3-dev'],
-    ['libcap', 'libcap2'], ['libcap', 'libcap-dev'],
-    ['libxcb', 'libxcb1'], ['libxcb', 'libxcb-dev'], ['libxcb', 'libxcb1-dev'],
-    ['libxcb-util', 'libxcb-util1'],
-    ['libdrm', 'libdrm2'], ['libdrm', 'libdrm-dev'],
-    ['libdrm', 'libdrm-amdgpu1'], ['libdrm', 'libdrm-nouveau2'], ['libdrm', 'libdrm-radeon1'],
-    ['libffi', 'libffi8'], ['libffi', 'libffi-dev'],
-    ['libnotify', 'libnotify4'], ['libnotify', 'libnotify-dev'],
-    ['libnspr', 'libnspr4-dev'],
-    ['libpulse', 'libpulse0'], ['libpulse', 'libpulse-dev'],
-    ['libxss', 'libxss1'], ['libxss', 'libxss-dev'],
-    ['libxtst', 'libxtst6'], ['libxtst', 'libxtst-dev'],
-    ['mesa', 'libgl1-mesa-glx'], ['mesa', 'libegl1-mesa'],
-    ['mesa', 'libgles2-mesa'], ['mesa', 'libglapi-mesa'],
-    ['nss', 'libnss3'], ['nss', 'libnss3-dev'],
-    ['nspr', 'libnspr4'], ['nspr', 'libnspr4-dev'],
-    ['p11-kit', 'libp11-kit0'], ['p11-kit', 'libp11-kit-dev'],
-    ['python', 'python3'], ['python', 'python3-minimal'], ['python', 'python3-dev'],
-    ['sqlite', 'libsqlite3-0'], ['sqlite', 'libsqlite3-dev'],
-    ['systemd-libs', 'libsystemd0'],
-  ];
+
+  // Read mapping source from config file
+  const sourceFile = '/etc/pacman-debian/paclinks.conf';
+  let commonMappings: [string, string][] = [];
+
+  if (!fs.existsSync(sourceFile)) {
+    console.log(`No ${sourceFile} found. Run setup or create one with Arch→Debian mappings.`);
+    console.log('Example: glibc libc6');
+    return;
+  }
+
+  const text = fs.readFileSync(sourceFile, 'utf8');
+  for (const line of text.split('\n')) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const [virt, ...rest] = t.split(/\s+/);
+    if (virt && rest.length > 0) commonMappings.push([virt, rest.join(' ')]);
+  }
 
   const created: [string, string][] = [];
   for (const [virt, deb] of commonMappings) {

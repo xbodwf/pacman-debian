@@ -4,6 +4,7 @@ import { iterateTar } from './tar';
 export interface PkgInfo {
   name: string;
   version: string;
+  base?: string;
   description?: string;
   depends?: string[];
   conflicts?: string[];
@@ -14,6 +15,7 @@ export interface PkgInfo {
   installedSize?: number;
   size?: number;
   packager?: string;
+  buildDate?: number;
 }
 
 export interface InstallScript {
@@ -40,11 +42,13 @@ function parsePKGINFO(content: string): PkgInfo {
 
     switch (key) {
       case 'pkgname': info.name = val; break;
+      case 'pkgbase': info.base = val; break;
       case 'pkgver': info.version = val; break;
       case 'pkgdesc': info.description = val; break;
       case 'url': info.url = val; break;
       case 'arch': info.arch = val; break;
       case 'packager': info.packager = val; break;
+      case 'builddate': info.buildDate = parseInt(val, 10) || undefined; break;
       case 'size': info.size = parseInt(val, 10) || undefined; break;
       case 'installed_size': info.installedSize = parseInt(val, 10) || undefined; break;
       case 'depend': deps.push(val.split(/[<>=]/)[0].trim()); break;

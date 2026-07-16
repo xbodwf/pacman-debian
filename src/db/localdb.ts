@@ -37,9 +37,10 @@ function writeDesc(pkg: InstalledPackage): void {
     description: pkg.description, depends: pkg.depends,
     'pre-depends': pkg['pre-depends'], conflicts: pkg.conflicts,
     provides: pkg.provides, maintainer: pkg.maintainer, homepage: pkg.homepage,
+    license: pkg.license, pkgbase: pkg.pkgbase, buildDate: pkg.buildDate,
     section: pkg.controlSection, priority: pkg.controlPriority,
     installedSize: pkg.installedSize, installTime: pkg.installTime,
-    reason: pkg.reason, repoType: pkg.repoType,
+    reason: pkg.reason, repoType: pkg.repoType, repo: pkg.repo,
   }));
 }
 
@@ -54,9 +55,10 @@ function readDesc(dir: string): InstalledPackage | null {
       description: d.description || '', depends: d.depends,
       'pre-depends': d['pre-depends'], conflicts: d.conflicts,
       provides: d.provides, maintainer: d.maintainer, homepage: d.homepage,
+      license: d.license, pkgbase: d.pkgbase, buildDate: d.buildDate,
       controlSection: d.section, controlPriority: d.priority,
       installedSize: d.installedSize || 0, installTime: d.installTime || 0,
-      reason: d.reason || 'explicit', files, repoType: d.repoType || 'debian',
+      reason: d.reason || 'explicit', files, repoType: d.repoType || 'debian', repo: d.repo,
     };
   } catch { return null; }
 }
@@ -76,6 +78,20 @@ function readFiles(dir: string): string[] {
 export function addPackage(pkg: InstalledPackage): void {
   ensure();
   const dir = pkgDir(pkg);
+  // Keep one authoritative local-db record per package. Older versions can
+  // otherwise remain on disk and confuse libalpm consumers such as yay.
+  for (const entry of fs.readdirSync(LOCAL_DIR)) {
+    if (entry === 'by-name' || entry.startsWith('.')) continue;
+    const oldDir = path.join(LOCAL_DIR, entry);
+    if (oldDir === dir || !fs.statSync(oldDir).isDirectory()) continue;
+    try {
+      const oldDesc = JSON.parse(fs.readFileSync(descPath(oldDir), 'utf8'));
+      if (oldDesc.name === pkg.name) {
+        removeFileIndex(pkg.name, readFiles(oldDir));
+        fs.rmSync(oldDir, { recursive: true, force: true });
+      }
+    } catch {}
+  }
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   writeDesc(pkg);
   writeFiles(pkg);

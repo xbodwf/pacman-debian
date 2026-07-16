@@ -1,6 +1,8 @@
 import * as fs from 'node:fs';
 import { execSync } from 'node:child_process';
 import { parseControlFile } from '../core/control';
+import { readPaclinks } from '../core/paclinks';
+import { acquireDpkgLock, releaseDpkgLock } from '../lock/dpkg-lock';
 import type { InstalledPackage } from '../core/types';
 
 const DPKG_STATUS = '/var/lib/dpkg/status';
@@ -73,8 +75,17 @@ function formatDescription(desc?: string): string {
   return `Description: ${first}\n${rest}`;
 }
 
-export function writeDpkgEntry(pkg: InstalledPackage): void {
+export async function writeDpkgEntry(pkg: InstalledPackage): Promise<void> {
   if (!fs.existsSync(DPKG_STATUS)) return;
+  await acquireDpkgLock();
+  try {
+
+  // Skip packages whose architecture doesn't match the system — they'd cause
+  // multiarch conflicts in dpkg (e.g. lib32-*:amd64 on aarch64).
+  const pkgArch = toDpkgArch(pkg.architecture);
+  const sysArch = process.arch === 'arm64' ? 'aarch64' : process.arch;
+  const sysDpkgArch = toDpkgArch(sysArch);
+  const archMismatch = pkgArch !== sysDpkgArch;
 
   const content = fs.readFileSync(DPKG_STATUS, 'utf8');
   const entries = content.split('\n\n').filter((e: string) => e.trim() !== '');
@@ -83,6 +94,37 @@ export function writeDpkgEntry(pkg: InstalledPackage): void {
     return !(m && m[1] === pkg.name);
   });
 
+  // Strip :arch qualifiers from deps when package arch doesn't match system
+  // (otherwise dpkg would try to resolve libfreetype6:amd64 on aarch64)
+  let translateDep: (d: string) => string;
+  {
+    const paclinks = readPaclinks();
+    const virtMap = new Map(paclinks.map(e => [e.virt.toLowerCase(), e.deb]));
+    const debSet = new Set(paclinks.map(e => e.deb.toLowerCase()));
+    translateDep = (dep: string): string => {
+      const trimmed = dep.trim();
+      const noArch = archMismatch ? trimmed.replace(/:[\w.]+/g, '') : trimmed;
+      const name = noArch.split(/[<>=]/)[0].trim().toLowerCase();
+
+      // Drop deps with wrong arch
+      if (!archMismatch) {
+        const a = trimmed.match(/:([\w.]+)$/);
+        if (a && a[1] !== sysDpkgArch) return '';
+      }
+
+      const mapped = virtMap.get(name);
+      if (mapped) return noArch.replace(/^[^<>=]+/, mapped);
+      if (debSet.has(name)) return noArch;
+      if (name.endsWith('.so') || /^lib/.test(name) || name.endsWith('common') || name === 'sh') return '';
+      return noArch;
+    };
+  }
+
+  let depends = '';
+  if (pkg.depends) {
+    depends = pkg.depends.split(',').map(d => translateDep(d.trim())).filter(Boolean).join(', ');
+  }
+
   const entry = [
     `Package: ${pkg.name}`,
     `Status: install ok installed`,
@@ -90,11 +132,14 @@ export function writeDpkgEntry(pkg: InstalledPackage): void {
     `Section: ${pkg.controlSection || 'misc'}`,
     `Installed-Size: ${pkg.installedSize || 0}`,
     `Maintainer: ${pkg.maintainer || 'Unknown'}`,
-    `Architecture: ${toDpkgArch(pkg.architecture)}`,
+    `Architecture: ${archMismatch ? sysDpkgArch : pkgArch}`,
     `Version: ${pkg.version}`,
   ];
 
-  if (pkg.depends) entry.push(`Depends: ${pkg.depends}`);
+  if (depends) entry.push(`Depends: ${depends}`);
+  if (pkg.license) entry.push(`License: ${pkg.license}`);
+  if (pkg.pkgbase) entry.push(`X-Pacman-Base: ${pkg.pkgbase}`);
+  if (pkg.buildDate) entry.push(`X-Pacman-Build-Date: ${pkg.buildDate}`);
   entry.push(formatDescription(pkg.description));
   if (pkg.homepage) entry.push(`Homepage: ${pkg.homepage}`);
 
@@ -106,7 +151,7 @@ export function writeDpkgEntry(pkg: InstalledPackage): void {
   if (fs.existsSync(DPKG_INFO)) {
     const lp = `${DPKG_INFO}/${pkg.name}.list`;
     const files = pkg.files.length > 0
-      ? pkg.files
+      ? pkg.files.filter(f => f && f.trim())
       : (
           pkg.depends && /^[a-z]/.test(pkg.depends)
             ? loadFilesFromDpkg(pkg.depends.split(',')[0].trim().split(/\s/)[0])
@@ -115,8 +160,14 @@ export function writeDpkgEntry(pkg: InstalledPackage): void {
     const existing = fs.existsSync(lp)
       ? fs.readFileSync(lp, 'utf8').split('\n').filter(Boolean)
       : [];
-    fs.writeFileSync(lp, [...new Set([...existing, ...files])].sort().join('\n') + '\n');
+    const merged = [...new Set([...existing, ...files])].sort();
+    if (merged.length > 0) {
+      fs.writeFileSync(lp, merged.join('\n') + '\n');
+    } else if (fs.existsSync(lp)) {
+      fs.unlinkSync(lp);
+    }
   }
+  } finally { releaseDpkgLock(); }
 }
 
 function loadFilesFromDpkg(name: string): string[] {
@@ -129,8 +180,10 @@ function loadFilesFromDpkg(name: string): string[] {
   return [];
 }
 
-export function removeDpkgEntry(name: string): void {
+export async function removeDpkgEntry(name: string): Promise<void> {
   if (!fs.existsSync(DPKG_STATUS)) return;
+  await acquireDpkgLock();
+  try {
   const content = fs.readFileSync(DPKG_STATUS, 'utf8');
   const entries = content.split('\n\n').filter((e: string) => e.trim() !== '');
   const kept = entries.filter((e: string) => {
@@ -143,4 +196,15 @@ export function removeDpkgEntry(name: string): void {
 
   const lp = `${DPKG_INFO}/${name}.list`;
   if (fs.existsSync(lp)) fs.unlinkSync(lp);
+  } finally { releaseDpkgLock(); }
+}
+
+/** Rewrite dpkg entries for all pacman-debian-managed Arch packages,
+ *  translating dependency names through paclinks so apt doesn't break. */
+export async function rewriteArchDpkgEntries(): Promise<void> {
+  const { getAllPackages } = require('./localdb');
+  const pkgs: InstalledPackage[] = getAllPackages().filter((p: InstalledPackage) => p.repoType === 'arch');
+  for (const p of pkgs) {
+    await writeDpkgEntry(p);
+  }
 }

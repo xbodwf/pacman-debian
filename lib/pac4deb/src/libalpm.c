@@ -155,6 +155,7 @@ const char *alpm_strerror(alpm_errno_t err) {
 		case ALPM_ERR_OK: return "no error";
 		case ALPM_ERR_MEMORY: return "out of memory";
 		case ALPM_ERR_PKG_NOT_FOUND: return "package not found";
+		case ALPM_ERR_UNSUPPORTED: return "operation not supported by pacman-debian libalpm";
 		case ALPM_ERR_DB_NOT_FOUND: return "database not found";
 		default: return "unknown error";
 	}
@@ -221,7 +222,7 @@ alpm_list_t *load_jsonl_file(const char *filepath) {
 			json_ctx j;
 			json_init(&j, line);
 			if (json_next(&j) == '{') {
-				pkg_internal *p = json_to_pkg(&j);
+		pkg_internal *p = json_to_pkg(&j);
 				if (p->name && *(p->name)) {
 					p->origin = ALPM_PKG_FROM_SYNCDB;
 					alpm_list_t *lp = malloc(sizeof(alpm_list_t));
@@ -340,11 +341,13 @@ static alpm_list_t *load_dpkg_status(const char *path) {
 }
 
 /* Load all packages from local DB directory (each subdir has a desc file) */
- static alpm_list_t *load_localdb_dir(const char *dirpath) {
+static alpm_list_t *load_localdb_dir(const char *dirpath) {
  	alpm_list_t *pkgs = NULL, *tail = NULL;
  	DIR *d = opendir(dirpath);
  	if (!d) return NULL;
- 	struct dirent *entry;
+  struct dirent *entry;
+  char byname_dir[4096];
+  snprintf(byname_dir, sizeof(byname_dir), "%s/../by-name", dirpath);
  	while ((entry = readdir(d)) != NULL) {
  		if (entry->d_name[0] == '.') continue;
  		if (strcmp(entry->d_name, "by-name") == 0) continue;
@@ -354,13 +357,28 @@ static alpm_list_t *load_dpkg_status(const char *path) {
  		if (fd < 0) continue;
  		struct stat st;
  		if (fstat(fd, &st) < 0 || st.st_size == 0) { close(fd); continue; }
- 		char *buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
- 		close(fd);
- 		if (buf == MAP_FAILED) continue;
- 		json_ctx j;
- 		json_init(&j, buf);
- 		if (json_next(&j) != '{') { munmap(buf, st.st_size); continue; }
- 		pkg_internal *p = json_to_pkg(&j);
+		char *buf = malloc(st.st_size + 1);
+		if (!buf) { close(fd); continue; }
+		ssize_t got = read(fd, buf, st.st_size);
+		close(fd);
+		if (got != st.st_size) { free(buf); continue; }
+		buf[st.st_size] = 0;
+		json_ctx j;
+		json_init(&j, buf);
+		if (json_next(&j) != '{') { free(buf); continue; }
+		pkg_internal *p = json_to_pkg(&j);
+		/* The by-name symlink is the authoritative current version. Ignore
+		 * stale version directories left by older package-manager versions. */
+		if (p->name && *(p->name)) {
+			char linkpath[4096], current[4096], candidate[4096], candidate_dir[4096];
+			snprintf(linkpath, sizeof(linkpath), "%s/%s", byname_dir, p->name);
+			snprintf(candidate_dir, sizeof(candidate_dir), "%s/%s", dirpath, entry->d_name);
+			if (realpath(linkpath, current) && realpath(candidate_dir, candidate) && strcmp(current, candidate) != 0) {
+				pkg_free(p);
+				free(buf);
+				continue;
+			}
+		}
  		if (p->name && *(p->name)) {
  			p->origin = ALPM_PKG_FROM_LOCALDB;
 			alpm_list_t *lp = malloc(sizeof(alpm_list_t));
@@ -374,7 +392,7 @@ static alpm_list_t *load_dpkg_status(const char *path) {
  		} else {
  			pkg_free(p);
  		}
- 		munmap(buf, st.st_size);
+		free(buf);
  	}
  	closedir(d);
  	return pkgs;
@@ -521,13 +539,46 @@ static int load_local_db(alpm_db_t *db) {
 	if (db->pkgs) return 0;
 	char path[4096];
 	snprintf(path, sizeof(path), "%s/local", DB_DIR);
-	db->pkgs = load_localdb_dir(path);
+  db->pkgs = load_localdb_dir(path);
+	/* Local records are authoritative for packages managed by us. */
+	for (alpm_list_t *it = db->pkgs; it; it = it->next) {
+		pkg_internal *p = it->data;
+		if (p) p->db = db;
+	}
 
 	// Also load dpkg status for system packages
 	char dpkg_path[4096];
 	snprintf(dpkg_path, sizeof(dpkg_path), "%s", DPKG_STATUS);
-	alpm_list_t *dpkg_pkgs = load_dpkg_status(dpkg_path);
-	if (dpkg_pkgs) {
+  alpm_list_t *dpkg_pkgs = load_dpkg_status(dpkg_path);
+  if (dpkg_pkgs) {
+		/* Do not expose a second dpkg-backed copy of a package already present
+		 * in the pacman-debian local database. */
+		alpm_list_t *it = dpkg_pkgs;
+		while (it) {
+			alpm_list_t *next = it->next;
+			pkg_internal *p = it->data;
+			int duplicate = 0;
+			for (alpm_list_t *local = db->pkgs; local; local = local->next) {
+				pkg_internal *lp = local->data;
+				if (lp && p && lp->name && p->name && strcmp(lp->name, p->name) == 0) {
+					duplicate = 1;
+					break;
+				}
+			}
+			if (duplicate) {
+				if (it->prev) it->prev->next = it->next;
+				else dpkg_pkgs = it->next;
+				if (it->next) it->next->prev = it->prev;
+				pkg_free(p);
+				free(it);
+			}
+			it = next;
+		}
+		for (alpm_list_t *it2 = dpkg_pkgs; it2; it2 = it2->next) {
+			pkg_internal *p = it2->data;
+			if (p) p->db = db;
+		}
+		if (!dpkg_pkgs) return 0;
 		add_alternative_provides(dpkg_pkgs);
 		if (db->pkgs) {
 			alpm_list_t *last = alpm_list_last(db->pkgs);
@@ -1003,10 +1054,14 @@ int alpm_option_set_disable_dl_timeout(alpm_handle_t *handle, int disable) { (vo
 int alpm_option_get_disable_dl_timeout(alpm_handle_t *handle) { (void)handle; return 0; }
 int alpm_option_set_disable_sandbox(alpm_handle_t *handle, int disable) { (void)handle; (void)disable; return 0; }
 int alpm_option_get_disable_sandbox(alpm_handle_t *handle) { (void)handle; return 0; }
-int alpm_trans_init(alpm_handle_t *handle, int flags) { (void)handle; (void)flags; return 0; }
-int alpm_trans_prepare(alpm_handle_t *handle) { (void)handle; return 0; }
-int alpm_trans_commit(alpm_handle_t *handle) { (void)handle; return 0; }
-int alpm_trans_release(alpm_handle_t *handle) { (void)handle; return 0; }
-int alpm_add_pkg(alpm_handle_t *handle, alpm_pkg_t *pkg) { (void)handle; (void)pkg; return 0; }
-int alpm_remove_pkg(alpm_handle_t *handle, alpm_pkg_t *pkg) { (void)handle; (void)pkg; return 0; }
-int alpm_sync_sysupgrade(alpm_handle_t *handle, int enable_downgrade) { (void)handle; (void)enable_downgrade; return 0; }
+static int unsupported(alpm_handle_t *handle) {
+	if (handle) handle->err = ALPM_ERR_UNSUPPORTED;
+	return -1;
+}
+int alpm_trans_init(alpm_handle_t *handle, int flags) { (void)flags; return unsupported(handle); }
+int alpm_trans_prepare(alpm_handle_t *handle) { return unsupported(handle); }
+int alpm_trans_commit(alpm_handle_t *handle) { return unsupported(handle); }
+int alpm_trans_release(alpm_handle_t *handle) { return unsupported(handle); }
+int alpm_add_pkg(alpm_handle_t *handle, alpm_pkg_t *pkg) { (void)pkg; return unsupported(handle); }
+int alpm_remove_pkg(alpm_handle_t *handle, alpm_pkg_t *pkg) { (void)pkg; return unsupported(handle); }
+int alpm_sync_sysupgrade(alpm_handle_t *handle, int enable_downgrade) { (void)enable_downgrade; return unsupported(handle); }

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as localdb from '../db/localdb';
 import { loadDatabase } from '../db/database';
 import { readDpkgStatus } from '../db/dpkg-compat';
-import { searchRepo } from '../repo/repository';
+import { searchRepo, findInRepo } from '../repo/repository';
 import { t } from '../i18n';
 
 export function listInstalled(filter?: string, quiet = false): void {
@@ -71,8 +71,7 @@ export function checkIntegrity(name?: string): void {
 
 export function showInfo(name: string, fromRepo: boolean): void {
   if (fromRepo) {
-    const r = searchRepo(name);
-    const p = r.find(x => x.package === name);
+    const p = findInRepo(name);
     if (!p) { console.error(t('error_not_found', name)); return; }
     console.log(t('info_repo', p.repo));
     console.log(t('info_name', p.package));
@@ -103,6 +102,7 @@ export function showInfo(name: string, fromRepo: boolean): void {
   if (p.installedSize) lines.push(['Installed Size', (p.installedSize / 1024).toFixed(2) + ' KiB']);
   if (p.maintainer) lines.push(['Packager', p.maintainer]);
   if (our) {
+    if (our.repo) lines.push(['Repository', our.repo]);
     lines.push(['Files', String(our.files.length)]);
     lines.push(['Install Date', new Date(our.installTime).toISOString().slice(0, 10)]);
   }

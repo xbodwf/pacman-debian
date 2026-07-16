@@ -5,17 +5,18 @@ import * as http from 'node:http';
 import * as net from 'node:net';
 import { execSync } from 'node:child_process';
 import { parseDeb, readScript } from '../core/deb';
-import { extractTar } from '../core/tar';
+import { extractTar, safeTargetPath } from '../core/tar';
 import type { ProgressCallback } from '../core/tar';
 import { parsePkgTarZst } from '../core/pkgfile';
 import { logInstall, logError } from '../core/logger';
-import { findInRepo, downloadPkg } from '../repo/repository';
+import { findInRepo, findInRepoScoped, findInRepoVersioned, downloadPkg } from '../repo/repository';
 import { loadConfig } from '../repo/config';
 import {
   initDb, loadDatabase, saveDatabase, addPackage, isInstalled, getPackage,
   saveScript, runScript, createTransaction, completeTransaction, parseDepends,
 } from '../db/database';
 import { writeDpkgEntry, dpkgHasPackage } from '../db/dpkg-compat';
+import { acquireDpkgLock, releaseDpkgLock } from '../lock/dpkg-lock';
 import { removePackage, getPackage as getLocalPkg } from '../db/localdb';
 import { resolveDeps, detectConflicts } from '../core/deps';
 import { formatBytes } from '../ui/format';
@@ -42,6 +43,8 @@ async function installDeb(filePath: string, reason: 'explicit' | 'dependency', o
     if (realFiles.length > 0) return true;
   }
 
+  await acquireDpkgLock();
+  try {
   const tx = createTransaction('install', control.package, control.version);
   if (!opts.noscriptlet) {
     const preinst = readScript(pkg, 'preinst');
@@ -73,14 +76,15 @@ async function installDeb(filePath: string, reason: 'explicit' | 'dependency', o
     controlSection: control.section || 'misc',
     controlPriority: control.priority || 'optional',
     installedSize: control['installed-size'] ? parseInt(control['installed-size'], 10) : undefined,
-    installTime: Date.now(), reason, files,
+    installTime: Date.now(), reason, files, repo: opts.repo,
   };
 
   addPackage(db, ip);
-  try { writeDpkgEntry(ip); } catch (e) { console.error(t('warn_failed_dpkg_status', String(e))); }
+  try { await writeDpkgEntry(ip); } catch (e) { console.error(t('warn_failed_dpkg_status', String(e))); }
   saveDatabase(db);
   completeTransaction(tx.id);
   return true;
+  } finally { releaseDpkgLock(); }
 }
 
 /* When installing a real package, remove any existing link with the same name.
@@ -103,6 +107,8 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
   const existing = getPackage(db, info.name);
   if (opts.needed && existing && existing.version === info.version) return false;
 
+  await acquireDpkgLock();
+  try {
   const tx = createTransaction('install', info.name, info.version);
 
   if (!opts.noscriptlet && (install?.pre_install || install?.post_install)) {
@@ -125,8 +131,7 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
   const matchArch = (p: string, name: string) => p === name || p === '/' + name || (p.endsWith('/*') && name.startsWith(p.slice(0, -1)));
   for (let i = 0; i < total; i++) {
     const entry = dataBlocks[i];
-    const targetPath = path.resolve('/', entry.name);
-    if (!targetPath.startsWith('/')) continue;
+     const targetPath = safeTargetPath('/', entry.name);
     files.push('/' + entry.name);
     if (_archCfg.noExtract.some(p => matchArch(p, entry.name))) continue;
     if (entry.data) {
@@ -135,6 +140,7 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
         const bak = targetPath + '.pacnew';
         fs.writeFileSync(bak, entry.data, { mode: 0o755 });
       } else {
+        if (fs.existsSync(targetPath) && fs.lstatSync(targetPath).isSymbolicLink()) fs.unlinkSync(targetPath);
         fs.writeFileSync(targetPath, entry.data, { mode: 0o755 });
       }
     }
@@ -162,17 +168,21 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
     depends: (info.depends || []).join(', '),
     conflicts: (info.conflicts || []).join(', '),
     provides: (info.provides || []).join(', '),
+    maintainer: info.packager,
     homepage: info.url,
-    controlSection: 'unknown', controlPriority: 'optional',
-    installedSize: info.installedSize,
+    license: (info.license || []).join(', '), pkgbase: info.base, buildDate: info.buildDate,
+    controlSection: 'misc', controlPriority: 'optional',
+    installedSize: info.installedSize ?? (info.size ? Math.ceil(info.size / 1024) : undefined),
     installTime: Date.now(), reason, files, repoType: 'arch',
+    repo: opts.repo,
   };
 
   addPackage(db, ip);
-  try { writeDpkgEntry(ip); } catch (e) { console.error(t('warn_failed_dpkg_status', String(e))); }
+  try { await writeDpkgEntry(ip); } catch (e) { console.error(t('warn_failed_dpkg_status', String(e))); }
   saveDatabase(db);
   completeTransaction(tx.id);
   return true;
+  } finally { releaseDpkgLock(); }
 }
 
 export async function installPkgFile(filePath: string, reason: 'explicit' | 'dependency', opts: InstallOptions = {}, onProgress?: ProgressCallback): Promise<boolean> {
@@ -335,33 +345,53 @@ export async function installPkg(target: string, opts: InstallOptions = {}): Pro
   };
 
   console.log(t('packages_single', fname) + '\n');
-  if (!await confirm(t('confirm_proceed'))) return false;
+  if (!await confirm(t('confirm_proceed'))) return true;
   if (opts.print) { console.log(t('would_install', fname)); return true; }
-  console.log(`(1/1) ${t('progress_loading_files_msg')} ${drawBar(0)}`);
-  const result = await installPkgFile(localPath, 'explicit', opts);
-  console.log(`(1/1) installing ${fname} ${drawBar(100)}`);
-  if (isUrl) try { fs.unlinkSync(localPath); } catch {}
-  return result;
+  process.stdout.write(`(1/1) ${t('progress_loading_files_msg')} ${drawBar(0)}`);
+  let lastName = '';
+  try {
+    const result = await installPkgFile(localPath, 'explicit', opts, (current, total, name) => {
+      const pct = total > 0 ? Math.round(current / total * 100) : 100;
+      lastName = name;
+      process.stdout.write(`\r\x1b[K(1/1) ${t('progress_loading_files_msg')} ${name} ${drawBar(pct)}`);
+    });
+    process.stdout.write(`\r\x1b[K(1/1) installing ${fname} ${drawBar(100)}\n`);
+    if (isUrl) try { fs.unlinkSync(localPath); } catch {}
+    return result;
+  } catch (error) {
+    process.stdout.write(`\r\x1b[K`);
+    console.error(`error: failed to install ${fname}${lastName ? ` near ${lastName}` : ''}: ${(error as Error).message}`);
+    if (isUrl) try { fs.unlinkSync(localPath); } catch {}
+    return false;
+  }
 }
 
 export async function installPackages(targets: string[], opts: InstallOptions = {}): Promise<number> {
   initDb();
 
-  // Validate targets exist
+  // Validate targets exist (support repo/pkgname syntax)
   const targetPkgs: RepoPkg[] = [];
   for (const target of targets) {
-    const rp = findInRepo(target);
+    const sl = target.indexOf('/');
+    const repo = sl > 0 ? target.slice(0, sl) : undefined;
+    const requested = sl > 0 ? target.slice(sl + 1) : target;
+    const eq = requested.indexOf('=');
+    const name = eq >= 0 ? requested.slice(0, eq) : requested;
+    const version = eq >= 0 ? requested.slice(eq + 1) : undefined;
+    const rp = version ? findInRepoVersioned(name, version, repo)
+      : (repo ? findInRepoScoped(repo, name) : findInRepo(name));
+    const displayName = target;
     if (!rp) {
       const cacheDir = '/var/cache/pacman-debian/packages';
       if (!fs.existsSync(cacheDir) || fs.readdirSync(cacheDir).length === 0) {
         console.error(t('error_db_not_synced'));
-        return 0;
+        throw new Error('package database is not synchronized');
       }
-      console.error(t('error_not_found', target));
-      continue;
+      console.error(t('error_not_found', displayName));
+      throw new Error(`target not found: ${displayName}`);
     }
-    if (opts.needed && dpkgHasPackage(target)) {
-      console.log(t('pkg_up_to_date', target));
+    if (opts.needed && dpkgHasPackage(name)) {
+      console.log(t('pkg_up_to_date', name));
       continue;
     }
     targetPkgs.push(rp);
@@ -370,14 +400,36 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
 
   // Resolve dependencies
   console.log(t('resolving_deps'));
-  const { install: depResults, errors: depErrors } = resolveDeps(targets);
+  const preferredRepos = new Map<string, string[]>();
+  if (!loadConfig().notFindDepsFromCurrentRepo) {
+    for (const target of targets) {
+      const slash = target.indexOf('/');
+      const requested = slash > 0 ? target.slice(slash + 1) : target;
+      const eq = requested.indexOf('=');
+      const name = eq >= 0 ? requested.slice(0, eq) : requested;
+      if (slash > 0) preferredRepos.set(name, [target.slice(0, slash)]);
+    }
+  }
+  const depTargets = targets.map(target => {
+    const slash = target.indexOf('/');
+    const prefix = slash > 0 ? target.slice(0, slash + 1) : '';
+    const requested = slash > 0 ? target.slice(slash + 1) : target;
+    const eq = requested.indexOf('=');
+    return prefix + (eq >= 0 ? requested.slice(0, eq) : requested);
+  });
+  const { install: depResults, errors: depErrors } = resolveDeps(depTargets, { preferredRepos });
   for (const err of depErrors) console.error(t('warn_prefix', err));
-  if (depErrors.length > 0 && depResults.length === 0) return 0;
+  if (depErrors.length > 0) throw new Error('dependency resolution failed');
 
   // Dedupe: deps first, then targets (Arch pacman convention)
   const allPkgs: RepoPkg[] = [];
   const seen = new Set<string>();
+  const targetNames = new Set(targetPkgs.map(p => p.package));
   for (const dr of depResults) {
+    // The explicit target below is authoritative, including an exact
+    // `name=version` request; do not let an unversioned dependency lookup
+    // replace it with the first repository match.
+    if (targetNames.has(dr.pkg.package)) continue;
     if (seen.has(dr.pkg.package)) continue;
     seen.add(dr.pkg.package);
     allPkgs.push(dr.pkg);
@@ -397,7 +449,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   if (conflicts.length > 0) {
     console.error('');
     console.error(t('error_unresolvable_conflicts'));
-    return 0;
+    throw new Error('unresolvable package conflicts detected');
   }
 
   const totalSize = allPkgs.reduce((s, p) => s + (p.size || 0), 0);
@@ -504,7 +556,11 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     }
   };
   const workers = Array.from({ length: Math.min(parallelN, total) }, () => doBatch());
-  await Promise.all(workers);
+  try {
+    await Promise.all(workers);
+  } catch (error) {
+    throw new Error(`package download failed: ${(error as Error).message}`);
+  }
 
   // 汇总行
   const totalSz = allPkgs.reduce((s, p) => s + (p.size || 0), 0);
@@ -573,6 +629,8 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   }
   fmtCheck(t('progress_loading_files_msg'));
 
+  if (!integrityOk) throw new Error('package integrity check failed');
+
   // 4. File conflict check
   fmtCheck(t('progress_checking_conflicts_msg'));
 
@@ -588,22 +646,29 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
         const needKb = allPkgs.reduce((s, p) => s + ((p.installedSize || 0)), 0);
         if (availKb < needKb) {
           console.error(`\n  error: not enough disk space (need ${(needKb / 1024).toFixed(1)} MiB, have ${(availKb / 1024).toFixed(1)} MiB)`);
-          return 0;
+          throw new Error('not enough disk space');
         }
       }
-    } catch {}
+    } catch (error) {
+      if ((error as Error).message === 'not enough disk space') throw error;
+    }
   }
   fmtCheck(t('progress_checking_space_msg'));
 
-  // Install phase (serial for safety)
-  for (const { pkg: p, path: localPath } of downloaded) {
-    const isExplicit = targetPkgs.some(r => r.package === p.package);
-    await installPkgFile(localPath, isExplicit ? (opts.asdeps ? 'dependency' : 'explicit') : 'dependency', opts);
-  }
+  // Hold dpkg locks for the complete system-modifying transaction.
+  await acquireDpkgLock();
+  try {
+    for (const { pkg: p, path: localPath } of downloaded) {
+      const isExplicit = targetPkgs.some(r => r.package === p.package);
+      const ok = await installPkgFile(localPath, isExplicit ? (opts.asdeps ? 'dependency' : 'explicit') : 'dependency', { ...opts, repo: p.repo });
+      if (!ok) throw new Error(`failed to install ${p.package}`);
+    }
 
-  // Post-transaction hooks
-  process.stdout.write(t('running_hooks') + '\n');
+    // Post-transaction hooks
+    process.stdout.write(t('running_hooks') + '\n');
+  } finally {
+    releaseDpkgLock();
+  }
 
   return total;
 }
-

@@ -4,6 +4,7 @@ export interface InstallOptions {
   asdeps?: boolean;
   print?: boolean;
   allowFiles?: boolean;
+  repo?: string; // source repository name
 }
 
 export interface RemoveOptions {

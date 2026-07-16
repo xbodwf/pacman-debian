@@ -83,8 +83,46 @@ function matchGlob(pattern: string, name: string): boolean {
   return false;
 }
 
+export function safeTargetPath(root: string, entryName: string): string {
+  const base = path.resolve(root);
+  const normalizedName = entryName.replace(/^\.\//, '').replace(/^\/+/, '');
+  if (normalizedName.split(/[\\/]+/).includes('..')) {
+    throw new Error(`unsafe package path: ${entryName}`);
+  }
+  const target = path.resolve(base, normalizedName);
+  const inside = base === path.parse(base).root
+    ? target.startsWith(base)
+    : target.startsWith(base + path.sep);
+  if (target !== base && !inside) {
+    throw new Error(`unsafe package path: ${entryName}`);
+  }
+
+  // Existing symlinked parents could redirect a normal-looking path outside
+  // the package root before the file is written.
+  let current = path.dirname(target);
+  while (current !== base && (base === path.parse(base).root ? current.startsWith(base) : current.startsWith(base + path.sep))) {
+    const realCurrent = fs.existsSync(current) ? fs.realpathSync(current) : current;
+    const realInside = base === path.parse(base).root
+      ? realCurrent.startsWith(base)
+      : realCurrent.startsWith(base + path.sep);
+    if (realCurrent !== current && !realInside) {
+      throw new Error(`unsafe package parent path: ${entryName}`);
+    }
+    current = path.dirname(current);
+  }
+  return target;
+}
+
+function removeExistingPath(target: string): void {
+  if (!fs.existsSync(target) && !fs.lstatSync(target, { throwIfNoEntry: false })) return;
+  const stat = fs.lstatSync(target);
+  if (stat.isDirectory() && !stat.isSymbolicLink()) fs.rmSync(target, { recursive: true, force: true });
+  else fs.unlinkSync(target);
+}
+
 export function extractTar(buf: Buffer, dest: string, onProgress?: ProgressCallback, noExtract?: string[], noUpgrade?: string[]): string[] {
   const extracted: string[] = [];
+  const base = path.resolve(dest);
   const entries = [...iterateTar(buf)];
   const total = entries.length;
   for (let i = 0; i < total; i++) {
@@ -93,14 +131,14 @@ export function extractTar(buf: Buffer, dest: string, onProgress?: ProgressCallb
     if (targetPath.startsWith('./')) targetPath = targetPath.slice(2);
     if (targetPath.startsWith('/')) targetPath = targetPath.slice(1);
     if (!targetPath) continue;
-    const fullPath = path.resolve(dest, targetPath);
-    if (!fullPath.startsWith(path.resolve(dest))) continue;
+    const fullPath = safeTargetPath(dest, targetPath);
     extracted.push(`/${targetPath}`);
     onProgress?.(i + 1, total, targetPath);
 
     if (noExtract?.some(p => matchGlob(p, targetPath))) continue;
 
     if (entry.type === 'directory') {
+      if (fs.existsSync(fullPath) && fs.lstatSync(fullPath).isSymbolicLink()) removeExistingPath(fullPath);
       fs.mkdirSync(fullPath, { recursive: true, mode: entry.mode || 0o755 });
     } else if (entry.type === 'file') {
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
@@ -108,11 +146,20 @@ export function extractTar(buf: Buffer, dest: string, onProgress?: ProgressCallb
         const bak = fullPath + '.pacnew';
         if (entry.data) fs.writeFileSync(bak, entry.data, { mode: entry.mode || 0o644 });
       } else {
+        if (fs.existsSync(fullPath) && fs.lstatSync(fullPath).isSymbolicLink()) removeExistingPath(fullPath);
         if (entry.data) fs.writeFileSync(fullPath, entry.data, { mode: entry.mode || 0o644 });
       }
     } else if (entry.type === 'symlink') {
+      if (path.isAbsolute(entry.linkname) || entry.linkname.split(/[\\/]+/).includes('..')) {
+        throw new Error(`unsafe package symlink: ${entry.name} -> ${entry.linkname}`);
+      }
+      const resolvedLink = path.resolve(path.dirname(fullPath), entry.linkname);
+      const linkInside = base === path.parse(base).root
+        ? resolvedLink.startsWith(base)
+        : resolvedLink.startsWith(base + path.sep);
+      if (!linkInside) throw new Error(`unsafe package symlink: ${entry.name} -> ${entry.linkname}`);
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-      try { fs.unlinkSync(fullPath); } catch {}
+      removeExistingPath(fullPath);
       fs.symlinkSync(entry.linkname, fullPath);
     }
   }

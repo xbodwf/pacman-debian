@@ -1,5 +1,5 @@
 import * as fs from 'node:fs';
-import { findInRepo, findProvides, batchFindInRepo } from '../repo/repository';
+import { findInRepo, findInRepoScoped, findProvides, findProvidesScoped, batchFindInRepo } from '../repo/repository';
 import { loadDatabase } from '../db/database';
 import { readDpkgStatus, dpkgHasPackage } from '../db/dpkg-compat';
 import type { RepoPkg } from './types';
@@ -239,7 +239,13 @@ function isDepSatisfied(dep: Dep, state: DepState, upgradeMode = false): boolean
 }
 
 /* ---- Find provider in repo (uses cached idx + provides index) ---- */
-function findProvider(name: string, state: DepState): RepoPkg | undefined {
+function findProvider(name: string, state: DepState, preferredRepos: string[] = []): RepoPkg | undefined {
+  for (const repo of preferredRepos) {
+    const scoped = findInRepoScoped(repo, name);
+    if (scoped) return scoped;
+    const provided = findProvidesScoped(repo, name);
+    if (provided) return provided;
+  }
   // Direct lookup via cached idx (binary search, no disk I/O)
   const direct = findInRepo(name);
   if (direct) return direct;
@@ -260,6 +266,8 @@ function findProvider(name: string, state: DepState): RepoPkg | undefined {
 /* ---- Full dependency resolution ---- */
 export interface ResolveDepsOptions {
   upgradeMode?: boolean;
+  /** Repositories to try first for each target, keyed by package name. */
+  preferredRepos?: Map<string, string[]>;
 }
 
 export function resolveDeps(targets: string[], opts: ResolveDepsOptions = {}): { install: DepResult[]; errors: string[] } {
@@ -268,11 +276,17 @@ export function resolveDeps(targets: string[], opts: ResolveDepsOptions = {}): {
   const errors: string[] = [];
   const seen = new Set<string>();
   const resolvedSet = new Set<string>();
-  const queue: string[] = [...targets];
+  const queue: Array<{ name: string; preferredRepos: string[] }> = targets.map(name => {
+    const slash = name.indexOf('/');
+    const packageName = slash > 0 ? name.slice(slash + 1) : name;
+    const configured = opts.preferredRepos?.get(packageName) || [];
+    return { name: packageName, preferredRepos: slash > 0 ? [name.slice(0, slash), ...configured] : configured };
+  });
   let processedCount = 0;
 
   while (queue.length > 0) {
-    const name = queue.shift()!;
+    const item = queue.shift()!;
+    const name = item.name;
     processedCount++;
     if (seen.has(name)) continue;
     seen.add(name);
@@ -288,7 +302,7 @@ export function resolveDeps(targets: string[], opts: ResolveDepsOptions = {}): {
       continue;
     }
 
-    const rp = findProvider(name, state);
+    const rp = findProvider(name, state, item.preferredRepos);
     if (!rp) {
       errors.push(`'${name}' not found`);
       continue;
@@ -302,7 +316,7 @@ export function resolveDeps(targets: string[], opts: ResolveDepsOptions = {}): {
 
     for (const d of parseDepList(rp.depends)) {
       if (!seen.has(d.name) && !isDepSatisfied(d, state, opts.upgradeMode)) {
-        queue.push(d.name);
+        queue.push({ name: d.name, preferredRepos: [rp.repo, ...item.preferredRepos.filter(r => r !== rp.repo)] });
       }
     }
   }

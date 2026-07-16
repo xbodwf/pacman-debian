@@ -32,6 +32,9 @@ export interface InstalledPackage {
   conflicts?: string;
   provides?: string;
   maintainer?: string;
+  license?: string;
+  pkgbase?: string;
+  buildDate?: number;
   homepage?: string;
   controlSection?: string;
   controlPriority?: string;
@@ -40,6 +43,7 @@ export interface InstalledPackage {
   reason: 'explicit' | 'dependency';
   files: string[];
   repoType?: 'debian' | 'arch' | 'link';
+  repo?: string; // source repository name, e.g. "extra", "trixie"
 }
 
 export interface RepoPkg {
@@ -85,6 +89,7 @@ export interface Config {
   logFile: string;
   rootDir: string;
   repos: RepoConfig[];
+  notFindDepsFromCurrentRepo: boolean;
 }
 
 export interface Database {
