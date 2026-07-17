@@ -35,6 +35,8 @@ const _messages: Record<string, string> = {
   prompt_lib_built: "  libalpm.so 已构建并安装到 /usr/local/lib/",
   prompt_lib_failed: "  警告：libalpm 构建失败: {0}",
   prompt_virtual_pacman: "在 dpkg 状态中创建虚拟 pacman 包（v{0}）？",
+  prompt_replace_game_pacman: "当前安装的 pacman 是 Debian 吃豆人游戏。是否替换为 pacman-debian 虚拟包？[Y/n]:",
+  prompt_replace_game_pacman_failed: "  无法卸载 Debian pacman 游戏：{0}",
   prompt_virtual_pacman_created: "  已在 dpkg 状态中创建虚拟 pacman 包 v{0}",
   prompt_virtual_pacman_exists: "  虚拟 pacman 包已存在于 dpkg 状态中",
   prompt_relink: "  重新链接 {0} → {1}？",

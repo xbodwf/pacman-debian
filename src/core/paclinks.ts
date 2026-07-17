@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 
-const PACLINKS_FILE = '/var/lib/pacman-debian/paclinks';
+export const PACLINKS_FILE = '/var/lib/pacman-debian/paclinks';
 
 export interface PaclinkEntry {
   virt: string;
@@ -35,4 +35,15 @@ export function addPaclink(virt: string, deb: string): void {
 
 export function removePaclink(virt: string): void {
   writePaclinks(readPaclinks().filter(e => e.virt !== virt));
+}
+
+export function parsePaclinkText(text: string): PaclinkEntry[] {
+  const result: PaclinkEntry[] = [];
+  for (const line of text.split('\n')) {
+    const value = line.trim();
+    if (!value || value.startsWith('#')) continue;
+    const [virt, deb] = value.split(/\s+/, 2);
+    if (virt && deb) result.push({ virt, deb });
+  }
+  return result;
 }

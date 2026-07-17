@@ -63,12 +63,32 @@ sudo $(which pacman-debian-setup)
 > 如果使用普通用户安装，Node.js 会将包安装到用户家目录（`~/.npm-global/` 等），
 > 存在被其他用户或脚本篡改、植入恶意内容的风险。请始终使用 `sudo npm install -g`。
 
-安装后：
+安装完成后，运行下面的命令迁移系统 APT 源并开始使用 pacman-debian：
+
+```bash
+sudo pacmigrate setup
+```
+
+然后同步软件包源，并进行全面系统更新：
 
 ```bash
 sudo pacman -Sy
-sudo pacman -S neofetch
+sudo pacman -Syu
 ```
+
+`pacmigrate setup` 同时读取传统的 `sources.list`/`.list` 文件和 Ubuntu 24.04
+使用的 deb822 `.sources` 文件。它不会修改 APT 源文件，会先备份现有的
+pacman-debian 配置，并询问常用的 pacman 选项。
+
+Arch 到 Debian 的兼容映射需要单独同步：
+
+```bash
+sudo paclink -Syu
+```
+
+`paclink` 将映射文件作为自己的仓库：`-Sy` 同步源，`-Su` 使用缓存源，`-U`
+安装本地映射文件。只有 Debian 目标包已安装时才会创建映射。目标包被删除后，
+对应映射也会删除；如果仍有已安装的 Arch 包依赖该虚拟名称，会显示警告。
 
 ### 开发安装
 

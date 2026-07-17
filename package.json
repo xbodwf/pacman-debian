@@ -28,6 +28,7 @@
     "makepkg": "dist/makepkg/index.js",
     "pacman-conf": "dist/scripts/pacman-conf.js",
     "pacman-debian-setup": "dist/scripts/setup.js",
+    "pacmigrate": "dist/cli/pacmigrate.js",
     "paclink": "dist/cli/paclink.js",
     "update-ca-trust": "dist/cli/update-ca-trust.js",
     "archlinux-java": "dist/cli/archlinux-java.js",

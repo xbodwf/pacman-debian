@@ -142,6 +142,10 @@ export async function writeDpkgEntry(pkg: InstalledPackage): Promise<void> {
   if (pkg.buildDate) entry.push(`X-Pacman-Build-Date: ${pkg.buildDate}`);
   entry.push(formatDescription(pkg.description));
   if (pkg.homepage) entry.push(`Homepage: ${pkg.homepage}`);
+  const providedNames = readPaclinks()
+    .filter(link => link.deb.toLowerCase() === pkg.name.toLowerCase())
+    .map(link => link.virt);
+  if (providedNames.length > 0) entry.push(`Provides: ${[...new Set(providedNames)].join(', ')}`);
 
   kept = kept.filter((e: string) => e.trim() !== '');
   kept.push(entry.join('\n'));
@@ -167,6 +171,34 @@ export async function writeDpkgEntry(pkg: InstalledPackage): Promise<void> {
       fs.unlinkSync(lp);
     }
   }
+  } finally { releaseDpkgLock(); }
+}
+
+/** Add current paclink virtual names to installed Debian package stanzas. */
+export async function refreshDpkgProvides(): Promise<void> {
+  if (!fs.existsSync(DPKG_STATUS)) return;
+  await acquireDpkgLock();
+  try {
+    const links = readPaclinks();
+    const byDeb = new Map<string, string[]>();
+    for (const link of links) {
+      const values = byDeb.get(link.deb) || [];
+      values.push(link.virt);
+      byDeb.set(link.deb, values);
+    }
+    const content = fs.readFileSync(DPKG_STATUS, 'utf8');
+    const entries = content.split('\n\n').filter((entry: string) => entry.trim());
+    const updated = entries.map((entry: string) => {
+      const match = entry.match(/^Package: (.+)$/m);
+      if (!match) return entry;
+      const provides = byDeb.get(match[1]);
+      if (!provides?.length) return entry.replace(/^Provides: .*\n/m, '');
+      const line = `Provides: ${[...new Set(provides)].join(', ')}`;
+      if (/^Provides: .*$/m.test(entry)) return entry.replace(/^Provides: .*$/m, line);
+      return `${entry}\n${line}`;
+    });
+    fs.writeFileSync(DPKG_STATUS, updated.join('\n\n') + '\n');
+    _dpkgCache = null;
   } finally { releaseDpkgLock(); }
 }
 

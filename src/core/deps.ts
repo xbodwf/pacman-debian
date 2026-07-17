@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import { findInRepo, findInRepoScoped, findProvides, findProvidesScoped, batchFindInRepo } from '../repo/repository';
 import { loadDatabase } from '../db/database';
 import { readDpkgStatus, dpkgHasPackage } from '../db/dpkg-compat';
+import { readPaclinks } from './paclinks';
 import type { RepoPkg } from './types';
 
 export interface Dep {
@@ -155,6 +156,7 @@ interface DepState {
   localHasFiles: Set<string>;
   localLinks: Set<string>;  // link packages (virtual -> deb mappings)
   dpkgPkgs: Map<string, string>;
+  paclinkDebs: Map<string, string>;
   repoCache: RepoPkg[] | null;
 }
 
@@ -187,8 +189,9 @@ function getState(): DepState {
   const dpkg = readDpkgStatus();
   const dpkgMap = new Map<string, string>();
   for (const [n, p] of dpkg) dpkgMap.set(n, p.version);
+  const paclinkDebs = new Map(readPaclinks().map(link => [link.virt.toLowerCase(), link.deb]));
 
-  _state = { localPkgs: localMap, localHasFiles, localLinks, dpkgPkgs: dpkgMap, repoCache: null };
+  _state = { localPkgs: localMap, localHasFiles, localLinks, dpkgPkgs: dpkgMap, paclinkDebs, repoCache: null };
   return _state;
 }
 
@@ -225,7 +228,8 @@ function isDepSatisfied(dep: Dep, state: DepState, upgradeMode = false): boolean
     return true;
   }
   // Fall back to dpkg
-  const installedVer = state.dpkgPkgs.get(dep.name);
+  const mappedDeb = state.paclinkDebs.get(dep.name.toLowerCase());
+  const installedVer = state.dpkgPkgs.get(dep.name) || (mappedDeb ? state.dpkgPkgs.get(mappedDeb) : undefined);
   if (!installedVer) return false;
   if (dep.operator && dep.version) {
     return checkVersion(installedVer, dep.operator, dep.version);

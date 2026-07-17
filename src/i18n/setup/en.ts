@@ -35,6 +35,8 @@ const _messages: Record<string, string> = {
   prompt_lib_built: "  libalpm.so built and installed to /usr/local/lib/",
   prompt_lib_failed: "  Warning: libalpm build failed: {0}",
   prompt_virtual_pacman: "Create virtual pacman package (v{0}) in dpkg status?",
+  prompt_replace_game_pacman: "The installed pacman package is the Debian game. Replace it with pacman-debian's virtual package? [Y/n]:",
+  prompt_replace_game_pacman_failed: "  Could not remove the Debian pacman game: {0}",
   prompt_virtual_pacman_created: "  Created virtual pacman package v{0} in dpkg status",
   prompt_virtual_pacman_exists: "  Virtual pacman package already exists in dpkg status",
   prompt_relink: "  Relink {0} → {1}?",

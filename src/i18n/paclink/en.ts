@@ -32,6 +32,14 @@ const _messages: Record<string, string> = {
   help_text: `paclink v{0} — Map Debian packages to Arch virtual package names
 
 Operations:
+  -Sy / -Syy                 Sync mapping source / force refresh
+  -Su / -Syu / -Syyu         Rebuild mappings from cached source
+  -U <paclinks.conf>         Install a mapping source file
+  -Q                         List active mapping packages
+  -Qi [name]                 Show mapping package information
+  -Ql [name]                 List mapping records
+  -Qs <keyword>              Search mapping packages
+  -Qo <deb_pkg>              Show Arch names provided by a Debian package
   -I                         Initialize all common mappings from dpkg status
   -Ln <deb_pkg> <virt_name>  Create link (maps Debian package to Arch virtual name)
   -L                         List all links
@@ -62,6 +70,38 @@ Arguments:
   error_need_root: "Error: {0} requires root privileges",
   unknown_op: 'Error: unknown operation "{0}"',
   error_prefix: "error: {0}",
+  source_up_to_date: ":: paclink source is up to date: {0}",
+  source_downloaded: ":: Downloaded {0} mapping rules to {1}",
+  source_missing: "error: no cached paclink source; run paclink -Sy first",
+  source_invalid: "error: downloaded paclink source is empty or invalid",
+  source_invalid_file: "error: invalid paclink mapping file: {0}",
+  source_count: ":: Found {0} mapping rules",
+  mapping_changes: ":: Mapping changes: {0} to remove, {1} to update",
+  confirm_changes: ":: Apply mapping changes? [Y/n] ",
+  mapping_removed: "warning: removed paclink {0} -> {1}; target package is not installed",
+  mapping_depends: "warning: {0} still depends on virtual package {1}",
+  mappings_active: ":: Active mappings: {0}",
+  mappings_none: ":: No installed Debian targets match the mapping source",
+  usage_sync: "Usage: paclink -Sy | -Syy | -Su | -Syu | -Syyu",
+  usage_upgrade: "Usage: paclink -U <paclinks.conf>",
+  query_no_packages: "error: no mapping packages found",
+  query_no_match: 'No mapping packages match "{0}".',
+  query_name: "Name            : {0}",
+  query_version: "Version         : {0}",
+  query_target: "Debian Target   : {0}",
+  query_provides: "Provides        : {0}",
+  query_reason: "Install Reason  : {0}",
+  query_link_file: "Mapping         : {0} -> {1}",
+  query_provided_by: "{0} provides: {1}",
+  query_installed: "installed",
+  query_mapping: "mapping",
+  usage_query: "Usage: paclink -Q | -Qi [name] | -Ql [name] | -Qs <keyword> | -Qo <deb>",
+  source_file_missing: "No {0} found. Run setup or create one with Arch-to-Debian mappings.",
+  source_file_example: "Example: glibc libc6",
+  init_none: "No Debian packages found for any common mappings.",
+  init_found: ":: Found {0} installable mappings:",
+  init_more: "  ... and {0} more",
+  init_created: ":: Created {0} paclink mappings.",
 };
 
 export default _messages;
