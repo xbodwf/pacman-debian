@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { initDb, loadDatabase, saveDatabase, removePkg, getPackage, runScript } from '../db/database';
-import { removeDpkgEntry } from '../db/dpkg-compat';
+import { readDpkgStatus, removeDpkgEntry } from '../db/dpkg-compat';
 import { acquireDpkgLock, releaseDpkgLock } from '../lock/dpkg-lock';
 import { confirm } from '../ui/prompt';
 import type { RemoveOptions } from '../core/options';
@@ -11,6 +11,30 @@ import { color } from '../ui/colors';
 
 const DPKG_INFO = '/var/lib/dpkg/info';
 const LOCAL_DIR = '/var/lib/pacman-debian/local';
+
+function getDpkgPackage(name: string): import('../core/types').InstalledPackage | undefined {
+  const entry = readDpkgStatus().get(name);
+  if (!entry) return undefined;
+  const listPath = path.join(DPKG_INFO, `${name}.list`);
+  let files: string[] = [];
+  try { files = fs.readFileSync(listPath, 'utf8').split('\n').filter(Boolean); } catch {}
+  return {
+    name: entry.package,
+    version: entry.version,
+    architecture: entry.architecture || process.arch,
+    description: entry.description || '',
+    depends: entry.depends,
+    maintainer: entry.maintainer,
+    homepage: entry.homepage,
+    controlSection: entry.section,
+    controlPriority: entry.priority,
+    installedSize: entry.installedSize,
+    installTime: 0,
+    reason: 'explicit',
+    files,
+    repoType: 'debian',
+  };
+}
 
 /** 暴力扫 local/ 目录删除指定包的数据 */
 function purgeLocalDir(name: string): void {
@@ -131,7 +155,7 @@ function collectRemoveSet(target: string, opts: RemoveOptions, db: Database): st
 async function removeSingle(name: string, opts: RemoveOptions = {}, onPkgProgress?: (done: number, total: number) => void): Promise<boolean> {
   initDb();
   const db = loadDatabase();
-  const pkg = getPackage(db, name);
+  const pkg = getPackage(db, name) || getDpkgPackage(name);
   if (!pkg) { console.error(color.error(t('error_not_installed', name))); return false; }
 
   // Collect everything to remove
@@ -150,7 +174,7 @@ async function removeSingle(name: string, opts: RemoveOptions = {}, onPkgProgres
   await acquireDpkgLock();
   try {
   for (const n of toRemove) {
-    const p = getPackage(db, n);
+    const p = getPackage(db, n) || getDpkgPackage(n);
     if (!p) continue;
 
     if (!opts.noscriptlet) runScript(n, 'prerm', ['remove']);
@@ -198,7 +222,7 @@ async function removeSingle(name: string, opts: RemoveOptions = {}, onPkgProgres
 export async function removeByName(name: string, opts: RemoveOptions = {}): Promise<boolean> {
   initDb();
   const db = loadDatabase();
-  const pkg = getPackage(db, name);
+  const pkg = getPackage(db, name) || getDpkgPackage(name);
   if (!pkg) { console.error(color.error(t('error_not_installed', name))); return false; }
 
   // Collect removal set for display
@@ -206,7 +230,7 @@ export async function removeByName(name: string, opts: RemoveOptions = {}): Prom
 
   if (opts.print) {
     for (const n of toRemove) {
-      const p = getPackage(db, n);
+      const p = getPackage(db, n) || getDpkgPackage(n);
       if (p) console.log(t('would_remove', `${n}-${p.version}`));
     }
     return true;
@@ -233,7 +257,7 @@ export async function removeByName(name: string, opts: RemoveOptions = {}): Prom
     try {
       for (let i = 0; i < toRemove.length; i++) {
         const n = toRemove[i];
-        const p = getPackage(db, n);
+        const p = getPackage(db, n) || getDpkgPackage(n);
         if (!p) continue;
         const pname = `${n}-${p.version}`;
         const fmtLine = (pct: number) => {
@@ -266,7 +290,7 @@ export async function removePackages(names: string[], opts: RemoveOptions = {}):
   const allToRemove = new Set<string>();
 
   for (const name of names) {
-    const pkg = getPackage(db, name);
+    const pkg = getPackage(db, name) || getDpkgPackage(name);
     if (!pkg) { console.error(color.error(t('error_not_installed', name))); return false; }
     const set = collectRemoveSet(name, opts, db);
     for (const s of set) allToRemove.add(s);
@@ -277,7 +301,7 @@ export async function removePackages(names: string[], opts: RemoveOptions = {}):
 
   if (opts.print) {
     for (const n of list) {
-      const p = getPackage(db, n);
+      const p = getPackage(db, n) || getDpkgPackage(n);
       if (p) console.log(t('would_remove', `${n}-${p.version}`));
     }
     return true;
@@ -306,7 +330,7 @@ export async function removePackages(names: string[], opts: RemoveOptions = {}):
   try {
     for (let i = 0; i < list.length; i++) {
       const n = list[i];
-      const p = getPackage(db, n);
+      const p = getPackage(db, n) || getDpkgPackage(n);
       if (!p) continue;
       const pname = `${n}-${p.version}`;
       const fmtLine = (pct: number) => {

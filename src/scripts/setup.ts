@@ -2,7 +2,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { scopedT } from '../i18n';
 import { acquireDpkgLock, releaseDpkgLock } from '../lock/dpkg-lock';
 
@@ -14,6 +14,27 @@ const SYMLINK_PATH = '/etc/pacman';
 const DPKG_STATUS = '/var/lib/dpkg/status';
 const PACMAN_DB_SYMLINK = '/var/lib/pacman';
 const PACMAN_DB_TARGET = '/var/lib/pacman-debian';
+
+function ensureDpkgHelper(projectDir: string): void {
+  const helperDir = path.join(projectDir, 'dist', 'lock');
+  const helperPath = path.join(helperDir, 'dpkg-helper');
+  if (fs.existsSync(helperPath)) {
+    fs.chmodSync(helperPath, 0o755);
+    fs.accessSync(helperPath, fs.constants.X_OK);
+    console.log(`Executable helper ready: ${helperPath}`);
+    return;
+  }
+
+  const sourcePath = path.join(projectDir, 'src', 'lock', 'dpkg-helper.c');
+  if (!fs.existsSync(sourcePath)) {
+    throw new Error(`dpkg-helper is missing: ${helperPath}`);
+  }
+  fs.mkdirSync(helperDir, { recursive: true });
+  execFileSync('gcc', ['-O2', '-s', '-o', helperPath, sourcePath], { stdio: 'pipe', timeout: 30000 });
+  fs.chmodSync(helperPath, 0o755);
+  fs.accessSync(helperPath, fs.constants.X_OK);
+  console.log(`Built ${helperPath}`);
+}
 
 function getPacmanVersion(): string {
   const pkgPath = path.resolve(__dirname, '../../package.json');
@@ -140,16 +161,15 @@ async function main() {
     console.log(t('setup_config_exists', CONFIG_PATH));
   }
 
-  // --- Copy default paclinks.conf if missing ---
-  const paclinksTarget = '/etc/pacman-debian/paclinks.conf';
-  if (!fs.existsSync(paclinksTarget)) {
-    const paclinksSource = path.resolve(__dirname, '../../resources/paclinks.conf');
-    if (fs.existsSync(paclinksSource)) {
-      fs.copyFileSync(paclinksSource, paclinksTarget);
-      console.log(`Created ${paclinksTarget}`);
+  // --- Copy paclink source configuration if missing ---
+  const paclinkConfigTarget = '/etc/pacman-debian/paclink.conf';
+  if (!fs.existsSync(paclinkConfigTarget)) {
+    const paclinkConfigSource = path.resolve(__dirname, '../../resources/paclink.conf');
+    if (fs.existsSync(paclinkConfigSource)) {
+      fs.copyFileSync(paclinkConfigSource, paclinkConfigTarget);
+      console.log(`Created ${paclinkConfigTarget}`);
     }
   }
-
   // --- Ask to add multilib repo ---
   const multilibPath = '/etc/pacman.d/multilib';
   const multilibSection = '[multilib]';
@@ -230,6 +250,7 @@ async function main() {
   const projectDir = path.resolve(__dirname, '../..');
   const commands: [string, string][] = [
     ['pacman', path.join(projectDir, 'dist', 'index.js')],
+    ['pacmigrate', path.join(projectDir, 'dist', 'cli', 'pacmigrate.js')],
     ['makepkg', path.join(projectDir, 'dist', 'makepkg', 'index.js')],
     ['pacman-conf', path.join(projectDir, 'dist', 'scripts', 'pacman-conf.js')],
     ['paclink', path.join(projectDir, 'dist', 'cli', 'paclink.js')],
@@ -239,11 +260,17 @@ async function main() {
     ['pactree', path.join(projectDir, 'dist', 'cli', 'pactree.js')],
   ];
 
-  for (const [name, target] of commands) { await handleLink(`/usr/local/bin/${name}`, target); }
+  for (const [name, target] of commands) {
+    try { fs.chmodSync(target, 0o755); } catch (e: any) { console.error(`Failed to make ${target} executable: ${e.message}`); }
+    await handleLink(`/usr/local/bin/${name}`, target);
+  }
 
   // Also link Arch-compat tools to /usr/bin/ for package install scripts
   const archCompat = ['update-ca-trust', 'archlinux-java', 'fix_default', 'pactree'];
   for (const name of archCompat) { await handleLink(`/usr/bin/${name}`, `/usr/local/bin/${name}`); }
+
+  // --- Build the dpkg lock helper before any package transaction can run ---
+  ensureDpkgHelper(projectDir);
 
   // --- Build and install libalpm ---
   const libDir = path.join(projectDir, 'lib', 'pac4deb');
@@ -264,9 +291,23 @@ async function main() {
 
   // --- Virtual pacman package ---
   const pacVersion = getPacmanVersion();
-  const hasPacmanPkg = fs.existsSync(DPKG_STATUS) &&
-    fs.readFileSync(DPKG_STATUS, 'utf8').includes('\nPackage: pacman\n');
+  const dpkgStatus = fs.existsSync(DPKG_STATUS) ? fs.readFileSync(DPKG_STATUS, 'utf8') : '';
+  const pacmanEntry = dpkgStatus.split('\n\n').find(entry => /^Package: pacman$/m.test(entry));
+  const hasVirtualPacman = !!pacmanEntry && pacmanEntry.includes('Description: Virtual package provided by pacman-debian');
+  const isGamePacman = !!pacmanEntry && !hasVirtualPacman && /Description: Chase Monsters in a Labyrinth/m.test(pacmanEntry);
 
+  if (isGamePacman && await ask('prompt_replace_game_pacman')) {
+    try {
+      // Force removal is needed because APT helpers depend on the package name.
+      // The virtual replacement is written immediately below in the same setup.
+      execSync('dpkg --remove --force-depends pacman', { stdio: 'inherit', timeout: 60000 });
+    } catch (e: any) {
+      console.error(t('prompt_replace_game_pacman_failed', e.message));
+    }
+  }
+
+  const currentStatus = fs.existsSync(DPKG_STATUS) ? fs.readFileSync(DPKG_STATUS, 'utf8') : '';
+  const hasPacmanPkg = currentStatus.split('\n\n').some(entry => /^Package: pacman$/m.test(entry));
   if (!hasPacmanPkg) {
     if (await ask('prompt_virtual_pacman', pacVersion)) {
       const entry = [
@@ -289,15 +330,6 @@ async function main() {
     }
   } else {
     console.log(t('prompt_virtual_pacman_exists'));
-  }
-
-  // --- Default paclink mappings (batch via paclink -I) ---
-  console.log('');
-  console.log(t('setup_default_links'));
-  try {
-    execSync('paclink -I --noconfirm', { stdio: 'inherit', timeout: 60000 });
-  } catch {
-    console.log(t('setup_link_none'));
   }
 
   console.log('');

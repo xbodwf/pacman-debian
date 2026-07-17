@@ -32,6 +32,14 @@ const _messages: Record<string, string> = {
   help_text: `paclink v{0} — 将 Debian 包映射到 Arch 虚拟包名
 
 操作:
+  -Sy / -Syy                 同步映射源 / 强制刷新
+  -Su / -Syu / -Syyu         根据缓存映射源重建映射
+  -U <paclinks.conf>         安装映射源文件
+  -Q                         列出当前映射软件包
+  -Qi [名称]                 显示映射软件包信息
+  -Ql [名称]                 列出映射记录
+  -Qs <关键词>              搜索映射软件包
+  -Qo <Debian包>             显示 Debian 包提供的 Arch 名称
   -I                     初始化所有常用映射（基于 dpkg 已安装的包）
   -Ln <deb包> <虚拟名>   创建链接（映射 Debian 包到 Arch 虚拟包名）
   -L                     列出所有链接
@@ -62,6 +70,38 @@ const _messages: Record<string, string> = {
   error_need_root: "错误：{0} 需要 root 权限",
   unknown_op: '错误：未知操作 "{0}"',
   error_prefix: "错误：{0}",
+  source_up_to_date: ":: paclink 映射源已经是最新：{0}",
+  source_downloaded: ":: 已将 {0} 条映射规则下载到 {1}",
+  source_missing: "错误：没有缓存的 paclink 映射源，请先运行 paclink -Sy",
+  source_invalid: "错误：下载的 paclink 映射源为空或格式无效",
+  source_invalid_file: "错误：无效的 paclink 映射文件：{0}",
+  source_count: ":: 找到 {0} 条映射规则",
+  mapping_changes: ":: 映射变化：删除 {0} 条，更新 {1} 条",
+  confirm_changes: ":: 应用映射变化吗？[Y/n] ",
+  mapping_removed: "警告：已删除 paclink {0} -> {1}，目标软件包未安装",
+  mapping_depends: "警告：{0} 仍依赖虚拟软件包 {1}",
+  mappings_active: ":: 当前生效映射：{0}",
+  mappings_none: ":: 没有匹配映射源的已安装 Debian 目标包",
+  usage_sync: "用法：paclink -Sy | -Syy | -Su | -Syu | -Syyu",
+  usage_upgrade: "用法：paclink -U <paclinks.conf>",
+  query_no_packages: "错误：没有找到映射软件包",
+  query_no_match: "没有匹配“{0}”的映射软件包。",
+  query_name: "名称           ：{0}",
+  query_version: "版本           ：{0}",
+  query_target: "Debian 目标    ：{0}",
+  query_provides: "提供           ：{0}",
+  query_reason: "安装原因       ：{0}",
+  query_link_file: "映射           ：{0} -> {1}",
+  query_provided_by: "{0} 提供：{1}",
+  query_installed: "已安装",
+  query_mapping: "映射",
+  usage_query: "用法：paclink -Q | -Qi [名称] | -Ql [名称] | -Qs <关键词> | -Qo <Debian包>",
+  source_file_missing: "未找到 {0}。请运行 setup 或创建 Arch 到 Debian 的映射文件。",
+  source_file_example: "示例：glibc libc6",
+  init_none: "没有找到任何匹配的已安装 Debian 包。",
+  init_found: ":: 找到 {0} 条可用映射：",
+  init_more: "  ... 以及另外 {0} 条",
+  init_created: ":: 已创建 {0} 条 paclink 映射。",
 };
 
 export default _messages;

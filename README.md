@@ -73,12 +73,35 @@ sudo $(which pacman-debian-setup)
 > tampering, malicious modification, or breakage by other users or scripts on
 > the system. Always use `sudo npm install -g`.
 
-After setup:
+After installation, run this to migrate the system's APT sources and start using
+pacman-debian:
+
+```bash
+sudo pacmigrate setup
+```
+
+Then sync the package sources and perform a full system upgrade:
 
 ```bash
 sudo pacman -Sy
-sudo pacman -S neofetch
+sudo pacman -Syu
 ```
+
+`pacmigrate setup` reads both traditional `sources.list`/`.list` files and Ubuntu
+24.04 deb822 `.sources` files. It leaves the APT files untouched, backs up the
+current pacman-debian configuration, and asks about common pacman options.
+
+Synchronize Arch-to-Debian compatibility mappings separately:
+
+```bash
+sudo paclink -Syu
+```
+
+`paclink` uses the mapping source as its repository. `-Sy` syncs it, `-Su` uses
+the cached source, and `-U` installs a local mapping file. Mapping packages are
+created only when their Debian targets are installed. Removing a target removes
+the mapping and warns if an installed Arch package still depends on that virtual
+name.
 
 ### Development Install
 
