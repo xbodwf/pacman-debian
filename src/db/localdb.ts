@@ -157,12 +157,11 @@ export function getPackage(name: string): InstalledPackage | undefined {
       if (pkg) return pkg;
     } catch {}
   }
-  // Fallback: scan local dir
+  // Fallback: scan local dir (exact name match, not prefix)
   for (const entry of fs.readdirSync(LOCAL_DIR)) {
-    if (entry.startsWith(name + '-')) {
-      const pkg = readDesc(path.join(LOCAL_DIR, entry));
-      if (pkg) return pkg;
-    }
+    if (entry === 'by-name' || entry.startsWith('.')) continue;
+    const pkg = readDesc(path.join(LOCAL_DIR, entry));
+    if (pkg && pkg.name === name) return pkg;
   }
   return undefined;
 }

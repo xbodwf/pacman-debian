@@ -378,7 +378,10 @@ export function detectConflicts(packages: RepoPkg[]): Conflict[] {
         }
       }
       // Check against installed packages
-      if (dpkgHasPackage(c) || loadDatabase().packages.has(c)) {
+      // A package may declare a self-conflict in Debian metadata (or inherit
+      // one while replacing an older build). The incoming package replaces the
+      // installed instance, so this is a normal upgrade, not a conflict.
+      if (c !== pkg.package && (dpkgHasPackage(c) || loadDatabase().packages.has(c))) {
         conflicts.push({ a: pkg.package, b: c, reason: `${pkg.package} conflicts with installed ${c}` });
       }
     }

@@ -120,6 +120,12 @@ function removeExistingPath(target: string): void {
   else fs.unlinkSync(target);
 }
 
+function replaceFile(target: string, data: Buffer, mode: number): void {
+  const tmp = `${target}.pacman-debian.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, data, { mode });
+  fs.renameSync(tmp, target);
+}
+
 export function extractTar(buf: Buffer, dest: string, onProgress?: ProgressCallback, noExtract?: string[], noUpgrade?: string[]): string[] {
   const extracted: string[] = [];
   const base = path.resolve(dest);
@@ -144,16 +150,15 @@ export function extractTar(buf: Buffer, dest: string, onProgress?: ProgressCallb
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
       if (noUpgrade?.some(p => matchGlob(p, targetPath)) && fs.existsSync(fullPath)) {
         const bak = fullPath + '.pacnew';
-        if (entry.data) fs.writeFileSync(bak, entry.data, { mode: entry.mode || 0o644 });
+        if (entry.data) replaceFile(bak, entry.data, entry.mode || 0o644);
       } else {
         if (fs.existsSync(fullPath) && fs.lstatSync(fullPath).isSymbolicLink()) removeExistingPath(fullPath);
-        if (entry.data) fs.writeFileSync(fullPath, entry.data, { mode: entry.mode || 0o644 });
+        if (entry.data) replaceFile(fullPath, entry.data, entry.mode || 0o644);
       }
     } else if (entry.type === 'symlink') {
-      if (path.isAbsolute(entry.linkname) || entry.linkname.split(/[\\/]+/).includes('..')) {
-        throw new Error(`unsafe package symlink: ${entry.name} -> ${entry.linkname}`);
-      }
-      const resolvedLink = path.resolve(path.dirname(fullPath), entry.linkname);
+      const resolvedLink = path.isAbsolute(entry.linkname)
+        ? path.resolve(base, `.${entry.linkname}`)
+        : path.resolve(path.dirname(fullPath), entry.linkname);
       const linkInside = base === path.parse(base).root
         ? resolvedLink.startsWith(base)
         : resolvedLink.startsWith(base + path.sep);

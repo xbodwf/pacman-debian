@@ -16,6 +16,7 @@ import { color } from '../ui/colors';
 import { t } from '../i18n';
 import { humanSize, formatRate, formatETA, drawProgressBar } from '../ui/progress';
 import { log, logError, logSync } from '../core/logger';
+import { verCmp } from '../core/deps';
 
 const CACHE_DIR = '/var/cache/pacman-debian';
 const PKG_CACHE = path.join(CACHE_DIR, 'packages');
@@ -101,23 +102,24 @@ function getIdx(repoName: string): IdxEntry | null {
   if (!fs.existsSync(idxPath)) return null;
 
   const lines = fs.readFileSync(idxPath, 'utf8').split('\n').filter(l => l.length > 0);
-  const providesIndex = new Map<string, Array<{ chunkFile: string; offset: number }>>();
+  const entry: IdxEntry = { lines, providesIndex: new Map() };
+  _idxCache.set(repoName, entry);
+  return entry;
+}
 
-  for (const line of lines) {
+function ensureProvidesIndex(entry: IdxEntry): void {
+  if (entry.providesIndex.size > 0) return;
+  for (const line of entry.lines) {
     const info = parseIdxLine(line);
     if (!info || !info.provides) continue;
     for (const pr of info.provides.split(',')) {
       const pn = pr.trim().split(/[<>=]/)[0].trim();
       if (pn && pn !== info.pkgName) {
-        if (!providesIndex.has(pn)) providesIndex.set(pn, []);
-        providesIndex.get(pn)!.push({ chunkFile: info.chunkFile, offset: info.offset });
+        if (!entry.providesIndex.has(pn)) entry.providesIndex.set(pn, []);
+        entry.providesIndex.get(pn)!.push({ chunkFile: info.chunkFile, offset: info.offset });
       }
     }
   }
-
-  const entry: IdxEntry = { lines, providesIndex };
-  _idxCache.set(repoName, entry);
-  return entry;
 }
 
 async function downloadFile(url: string, onProgress?: (received: number, total: number) => void, ifModifiedSince?: string, dest?: string): Promise<Buffer | null> {
@@ -636,67 +638,38 @@ function batchReadPkgAt(pkgDir: string, chunkFile: string, requests: Array<{ pkg
  */
 export function batchFindInRepo(names: string[]): Map<string, RepoPkg> {
   const result = new Map<string, RepoPkg>();
-  const sorted = [...new Set(names)].filter(n => n).sort();
-  if (sorted.length === 0) return result;
+  const targets = [...new Set(names)].filter(Boolean).sort();
+  if (targets.length === 0) return result;
 
-  const cfg = loadConfig();
-  for (const repo of cfg.repos) {
+  // Locate each requested name with binary search, then batch-read the
+  // matching JSONL records. This avoids one disk read per package while also
+  // checking every configured repository for the newest candidate.
+  for (const repo of loadConfig().repos) {
     const idxEntry = getIdx(repo.name);
     if (!idxEntry) continue;
-    const { lines } = idxEntry;
+    const lines = idxEntry.lines;
     const pkgDir = path.join(PKG_CACHE, repo.name);
-
-    const chunkRequests = new Map<string, Array<{ pkgName: string; offset: number }>>();
-    let h = 0, t = lines.length - 1;
-    let hT = 0, tT = sorted.length - 1;
-
-    while (hT <= tT && h <= t) {
-      // Head side
-      if (h <= t) {
-        const hLine = lines[h];
-        const hName = hLine.slice(0, hLine.indexOf(' '));
-        const hTarget = sorted[hT];
-        if (hName === hTarget) {
-          const info = parseIdxLine(hLine);
-          if (info) {
-            if (!chunkRequests.has(info.chunkFile))
-              chunkRequests.set(info.chunkFile, []);
-            chunkRequests.get(info.chunkFile)!.push({ pkgName: info.pkgName, offset: info.offset });
-          }
-          hT++; h++;
-        } else if (hName < hTarget) {
-          h++;
-        } else {
-          hT++;
-        }
+    const requests = new Map<string, Array<{ pkgName: string; offset: number }>>();
+    for (const target of targets) {
+      let lo = 0, hi = lines.length - 1, found = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >>> 1;
+        const name = lines[mid].slice(0, lines[mid].indexOf(' '));
+        if (name < target) lo = mid + 1;
+        else { if (name === target) found = mid; hi = mid - 1; }
       }
-
-      // Tail side
-      if (h < t && hT <= tT) {
-        const tLine = lines[t];
-        const tName = tLine.slice(0, tLine.indexOf(' '));
-        const tTarget = sorted[tT];
-        if (tName === tTarget) {
-          const info = parseIdxLine(tLine);
-          if (info) {
-            if (!chunkRequests.has(info.chunkFile))
-              chunkRequests.set(info.chunkFile, []);
-            chunkRequests.get(info.chunkFile)!.push({ pkgName: info.pkgName, offset: info.offset });
-          }
-          tT--; t--;
-        } else if (tName > tTarget) {
-          t--;
-        } else {
-          tT--;
-        }
+      if (found < 0) continue;
+      for (let i = found; i < lines.length; i++) {
+        const info = parseIdxLine(lines[i]);
+        if (!info || info.pkgName !== target) break;
+        if (!requests.has(info.chunkFile)) requests.set(info.chunkFile, []);
+        requests.get(info.chunkFile)!.push({ pkgName: info.pkgName, offset: info.offset });
       }
     }
-
-    // Batch-read JSONL
-    for (const [chunkFile, requests] of chunkRequests) {
-      const pkgs = batchReadPkgAt(pkgDir, chunkFile, requests);
-      for (const p of pkgs) {
-        if (!result.has(p.package)) result.set(p.package, p);
+    for (const [chunkFile, chunkRequests] of requests) {
+      for (const pkg of batchReadPkgAt(pkgDir, chunkFile, chunkRequests)) {
+        const old = result.get(pkg.package);
+        if (!old || verCmp(pkg.version, old.version) > 0) result.set(pkg.package, pkg);
       }
     }
   }
@@ -709,6 +682,7 @@ export function findProvides(name: string): RepoPkg | undefined {
   for (const repo of cfg.repos) {
     const idxEntry = getIdx(repo.name);
     if (!idxEntry) continue;
+    ensureProvidesIndex(idxEntry);
     const entries = idxEntry.providesIndex.get(name);
     if (entries) {
       const pkgDir = path.join(PKG_CACHE, repo.name);
@@ -728,6 +702,7 @@ export function findProvidesScoped(repoName: string, name: string): RepoPkg | un
   if (!repo) return undefined;
   const idxEntry = getIdx(repo.name);
   if (!idxEntry) return undefined;
+  ensureProvidesIndex(idxEntry);
   const entries = idxEntry.providesIndex.get(name);
   if (!entries) return undefined;
   const pkgDir = path.join(PKG_CACHE, repo.name);
@@ -931,16 +906,23 @@ export async function downloadPkg(rp: RepoPkg, dest?: string, onProgress?: (rec:
   installPartialCleanup();
   activePartials.add(partial);
   // Stream directly to file instead of buffering in memory
+  let lastError: unknown;
   try {
-    const data = await downloadFile(url, onProgress, undefined, partial);
-    if (data === null) fs.renameSync(partial, local);
-    else if (data) fs.writeFileSync(partial, data);
-    if (data) fs.renameSync(partial, local);
-  } catch (error) {
-    try { fs.unlinkSync(partial); } catch {}
-    throw error;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+      const data = await downloadFile(url, onProgress, undefined, partial);
+      if (data === null) fs.renameSync(partial, local);
+      else if (data) fs.writeFileSync(partial, data);
+      if (data) fs.renameSync(partial, local);
+      return local;
+      } catch (error) {
+      lastError = error;
+      try { fs.unlinkSync(partial); } catch {}
+      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+      }
+    }
   } finally {
     activePartials.delete(partial);
   }
-  return local;
+  throw new Error(`${rp.package}: ${(lastError as Error).message} (after 3 attempts)`);
 }

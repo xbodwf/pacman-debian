@@ -7,6 +7,7 @@ import { confirm } from '../ui/prompt';
 import type { RemoveOptions } from '../core/options';
 import type { Database } from '../core/types';
 import { t } from '../i18n';
+import { color } from '../ui/colors';
 
 const DPKG_INFO = '/var/lib/dpkg/info';
 const LOCAL_DIR = '/var/lib/pacman-debian/local';
@@ -131,7 +132,7 @@ async function removeSingle(name: string, opts: RemoveOptions = {}, onPkgProgres
   initDb();
   const db = loadDatabase();
   const pkg = getPackage(db, name);
-  if (!pkg) { console.error(t('error_not_installed', name)); return false; }
+  if (!pkg) { console.error(color.error(t('error_not_installed', name))); return false; }
 
   // Collect everything to remove
   const toRemove = collectRemoveSet(name, opts, db);
@@ -140,7 +141,7 @@ async function removeSingle(name: string, opts: RemoveOptions = {}, onPkgProgres
   if (!noDeps && !opts.recursive && !opts.cascade) {
     // Check if any other package depends on this one
     if (isRequiredByOthers(name, new Set([name]), db)) {
-      console.error(`error: failed to prepare transaction (could not satisfy dependencies)\n  :: ${name} is required by some other package`);
+      console.error(`${color.error('error')}: failed to prepare transaction (could not satisfy dependencies)\n  :: ${color.pkg(name)} is required by some other package`);
       console.error('  (use -Rdd to skip this check, or -Rs to remove orphans)');
       return false;
     }
@@ -198,7 +199,7 @@ export async function removeByName(name: string, opts: RemoveOptions = {}): Prom
   initDb();
   const db = loadDatabase();
   const pkg = getPackage(db, name);
-  if (!pkg) { console.error(t('error_not_installed', name)); return false; }
+  if (!pkg) { console.error(color.error(t('error_not_installed', name))); return false; }
 
   // Collect removal set for display
   const toRemove = collectRemoveSet(name, opts, db);
@@ -213,14 +214,14 @@ export async function removeByName(name: string, opts: RemoveOptions = {}): Prom
 
   if (!opts.nodeps && !opts.recursive && !opts.cascade) {
     if (isRequiredByOthers(name, new Set([name]), db)) {
-      console.error(`error: failed to prepare transaction (could not satisfy dependencies)\n  :: ${name} is required by some other package`);
+      console.error(`${color.error('error')}: failed to prepare transaction (could not satisfy dependencies)\n  :: ${color.pkg(name)} is required by some other package`);
       console.error('  (use -Rdd to skip this check, or -Rs to remove orphans)');
       return false;
     }
   }
 
   console.log(t('checking_deps_remove') + '\n');
-  console.log(`Packages (${toRemove.length}): ${toRemove.join('  ')}`);
+  console.log(`${color.title('Packages')} (${toRemove.length}): ${toRemove.map(n => color.pkg(n)).join('  ')}`);
   console.log('');
 
   if (!await confirm(':: Proceed with removal?', false)) return true;
@@ -266,13 +267,13 @@ export async function removePackages(names: string[], opts: RemoveOptions = {}):
 
   for (const name of names) {
     const pkg = getPackage(db, name);
-    if (!pkg) { console.error(t('error_not_installed', name)); return false; }
+    if (!pkg) { console.error(color.error(t('error_not_installed', name))); return false; }
     const set = collectRemoveSet(name, opts, db);
     for (const s of set) allToRemove.add(s);
   }
 
   const list = [...allToRemove];
-  if (list.length === 0) { console.error(t('error_no_targets')); return false; }
+  if (list.length === 0) { console.error(color.error(t('error_no_targets'))); return false; }
 
   if (opts.print) {
     for (const n of list) {
@@ -286,7 +287,7 @@ export async function removePackages(names: string[], opts: RemoveOptions = {}):
   if (!opts.nodeps && !opts.recursive && !opts.cascade) {
     for (const name of names) {
       if (isRequiredByOthers(name, new Set(names), db)) {
-        console.error(`error: failed to prepare transaction (could not satisfy dependencies)\n  :: ${name} is required by some other package`);
+        console.error(`${color.error('error')}: failed to prepare transaction (could not satisfy dependencies)\n  :: ${color.pkg(name)} is required by some other package`);
         console.error('  (use -Rdd to skip this check, or -Rs to remove orphans)');
         return false;
       }
@@ -294,7 +295,7 @@ export async function removePackages(names: string[], opts: RemoveOptions = {}):
   }
 
   console.log(t('checking_deps_remove') + '\n');
-  console.log(`Packages (${list.length}): ${list.join('  ')}`);
+  console.log(`${color.title('Packages')} (${list.length}): ${list.map(n => color.pkg(n)).join('  ')}`);
   console.log('');
 
   if (!await confirm(':: Proceed with removal?', false)) return true;

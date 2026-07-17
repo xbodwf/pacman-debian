@@ -12,18 +12,29 @@ const ansi = {
   yellow: esc(33), cyan: esc(36), dim: esc(2), bold: esc(1), reset: esc(0),
 };
 
-let enabled = false;
+let configEnabled = false;
+let override: 'always' | 'never' | 'auto' | undefined;
 
 function checkConfig() {
   try {
     const cfg = loadConfig();
-    enabled = cfg.color;
+    configEnabled = cfg.color;
   } catch {}
 }
 checkConfig();
 
+export function setColorMode(mode: 'always' | 'never' | 'auto'): void {
+  override = mode;
+}
+
+function enabled(): boolean {
+  if (override === 'always') return true;
+  if (override === 'never') return false;
+  return configEnabled && !!process.stdout.isTTY;
+}
+
 function c(code: string): (s: string) => string {
-  return (s: string) => (enabled ? `${code}${s}${ansi.reset}` : s);
+  return (s: string) => (enabled() ? `${code}${s}${ansi.reset}` : s);
 }
 
 export const color = {

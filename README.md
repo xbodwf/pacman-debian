@@ -5,6 +5,20 @@ operating directly on Debian/Ubuntu `.deb` packages. It manages packages at the
 dpkg level — bypassing APT — and also supports native Arch Linux `.pkg.tar.zst`
 packages (including AUR compatibility via yay with a bundled libalpm).
 
+**Version 7.6.0 highlights:**
+- **Official-style operation help** — `-S`, `-R`, `-Q`, `-D`, `-T`, `-F`, and `-U`
+  each have their own localized `--help` output
+- **Better upgrade summaries** — verbose upgrades show repository, old/new versions,
+  download size, and net installed-size change
+- **More complete upgrades** — `-Syu` handles dpkg-only packages and explicit targets
+  through the same transaction path
+- **Safer package source changes** — source takeover warnings and localized confirmation
+  prompts are shown before package records and files change owners
+- **More reliable local database lookups** — package names are matched exactly, so
+  packages such as `pipewire` and `pipewire-bin` cannot be confused
+- **Pacman-style version output** — `pacman -V` and `pacman pacman` show the Pac-Man
+  banner with localized version text
+
 **Version 7.4.0 highlights:**
 - **Zero dpkg dependency** — version comparison algorithm ported from libdpkg,
   dpkg status parsed directly, no `dpkg` command required

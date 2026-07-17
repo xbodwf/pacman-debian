@@ -9,6 +9,7 @@ import { initDb, loadDatabase, saveDatabase, getPackage } from '../db/database';
 import { readDpkgStatus } from '../db/dpkg-compat';
 import { setNoConfirm, confirm } from '../ui/prompt';
 import { t as t_ } from '../i18n';
+import { color, setColorMode } from '../ui/colors';
 
 /** Strip repo/ prefix from target names (yay passes "extra/pkgname") */
 function stripRepo(names: string[]): string[] {
@@ -20,7 +21,7 @@ import pkg from '../../package.json';
 
 function needRoot() {
   if (!process.getuid || process.getuid() === 0) return;
-  console.error(t_('error_need_root'));
+  console.error(color.error(t_('error_need_root')));
   process.exit(1);
 }
 import type { InstallOptions } from '../core/options';
@@ -29,8 +30,79 @@ const CACHE = '/var/cache/pacman-debian/pkg';
 const PCACHE = '/var/cache/pacman-debian/packages';
 const VERSION = pkg.version;
 
-function help(): void {
+function help(op?: string): void {
+  switch (op) {
+    case 'S': return showSyncHelp();
+    case 'U': return showUpgradeHelp();
+    case 'R': return showRemoveHelp();
+    case 'Q': return showQueryHelp();
+    case 'D': return showDatabaseHelp();
+    case 'T': return showDeptestHelp();
+    case 'F': return showFilesHelp();
+    default: showMainHelp();
+  }
+}
+
+function showMainHelp(): void {
   console.log(t_('help_text'));
+}
+
+function showVersion(): void {
+  console.log(` .--.                  ${t_('version_string', VERSION)}
+/ _.-' .-.  .-.  .-.
+\\  '-. '-'  '-'  '-'
+ '--'
+`);
+}
+
+function showSyncHelp(): void {
+  console.log(t_('help_S'));
+  showGlobalOptions();
+}
+
+function showUpgradeHelp(): void {
+  console.log(t_('help_U'));
+  showGlobalOptions();
+}
+
+function showRemoveHelp(): void {
+  console.log(t_('help_R'));
+  showGlobalOptions();
+}
+
+function showQueryHelp(): void {
+  console.log(t_('help_Q'));
+  showGlobalOptions();
+}
+
+function showDatabaseHelp(): void {
+  console.log(t_('help_D'));
+  showGlobalOptions();
+}
+
+function showDeptestHelp(): void {
+  console.log(t_('help_T'));
+  showGlobalOptions();
+}
+
+function showFilesHelp(): void {
+  console.log(t_('help_F'));
+  showGlobalOptions();
+}
+
+function showGlobalOptions(): void {
+  console.log('');
+  console.log(t_('help_global'));
+}
+
+function showEasterEgg(name: string): void {
+  if (name === 'ciallo') {
+    console.log('Ciallo～(∠・ω< )⌒★');
+    return;
+  }
+  if (name === 'pacman') {
+    showVersion();
+  }
 }
 
 function cleanCache(all: boolean): void {
@@ -88,8 +160,8 @@ function checkDeps(packages: string[]): void {
   const dpkg = readDpkgStatus();
   for (const name of packages) {
     const rp = findInRepo(name);
-    if (!rp) { console.log(`${name}        not found`); continue; }
-    console.log(`${name}        ${dpkg.has(name) ? 'installed' : 'missing'}`);
+    if (!rp) { console.log(`${color.pkg(name)}        ${color.warn('not found')}`); continue; }
+    console.log(`${color.pkg(name)}        ${dpkg.has(name) ? color.ok('installed') : color.warn('missing')}`);
   }
 }
 
@@ -98,7 +170,7 @@ function markAsDep(packages: string[]): void {
   const db = loadDatabase();
   for (const name of packages) {
     const p = getPackage(db, name);
-    if (!p) { console.error(`error: '${name}' is not installed`); continue; }
+    if (!p) { console.error(color.error(`error: '${name}' is not installed`)); continue; }
     p.reason = 'dependency';
     saveDatabase(db);
     console.log(`  ${name} marked as dependency`);
@@ -110,19 +182,21 @@ function markAsExplicit(packages: string[]): void {
   const db = loadDatabase();
   for (const name of packages) {
     const p = getPackage(db, name);
-    if (!p) { console.error(`error: '${name}' is not installed`); continue; }
+    if (!p) { console.error(color.error(`error: '${name}' is not installed`)); continue; }
     p.reason = 'explicit';
     saveDatabase(db);
     console.log(`  ${name} marked as explicitly installed`);
   }
 }
 
-function extractGlobalFlags(args: string[]): { operands: string[]; noconfirm: boolean; needed: boolean; noscriptlet: boolean; print: boolean } {
-  let noconfirm = false, needed = false, noscriptlet = false, print = false;
+function extractGlobalFlags(args: string[]): { operands: string[]; noconfirm: boolean; needed: boolean; noscriptlet: boolean; print: boolean; noProgressBar: boolean; colorMode?: 'always' | 'never' | 'auto' } {
+  let noconfirm = false, needed = false, noscriptlet = false, print = false, noProgressBar = false;
+  let colorMode: 'always' | 'never' | 'auto' | undefined;
   const operands: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--config' || a === '--root' || a === '-r' || a === '--dbpath' || a === '-b') { i++; continue; }
+    if (a === '--color') { const mode = args[++i]; if (mode === 'always' || mode === 'never' || mode === 'auto') colorMode = mode; continue; }
     if (a === '--') continue; // skip -- separator (not needed)
     switch (a) {
       case '--noconfirm': noconfirm = true; break;
@@ -130,36 +204,42 @@ function extractGlobalFlags(args: string[]): { operands: string[]; noconfirm: bo
       case '--needed': needed = true; break;
       case '--noscriptlet': noscriptlet = true; break;
       case '--print': print = true; break;
-      case '--noprogressbar': break;
+      case '--noprogressbar': noProgressBar = true; break;
       default: operands.push(a);
     }
   }
-  return { operands, noconfirm, needed, noscriptlet, print };
+  return { operands, noconfirm, needed, noscriptlet, print, noProgressBar, colorMode };
 }
 
 export async function parseArgs(args: string[]): Promise<void> {
   if (args.length === 0) { console.error(t_('error_no_operation')); help(); return; }
 
-  const { operands, noconfirm, needed, noscriptlet, print } = extractGlobalFlags(args);
+  const { operands, noconfirm, needed, noscriptlet, print, noProgressBar, colorMode } = extractGlobalFlags(args);
+  if (colorMode) setColorMode(colorMode);
   setNoConfirm(noconfirm);
 
   if (operands.length === 0) { console.error(t_('error_no_operation')); help(); return; }
 
   const raw = operands[0];
   const rest = operands.slice(1);
-  const opts: InstallOptions = { needed, noscriptlet, print };
+  if (raw === 'ciallo' || raw === 'pacman') { showEasterEgg(raw); return; }
+  const opts: InstallOptions = { needed, noscriptlet, print, noProgressBar };
 
   // Long-form operations
   if (raw === '--help' || raw === '-h') { help(); return; }
-  if (raw === '--version' || raw === '-V') { console.log(t_('version_string', VERSION)); return; }
-  if (raw === '--sync') { needRoot();
+  if (raw === '--version' || raw === '-V') { showVersion(); return; }
+  if (raw === '--sync') {
+    if (rest.includes('--help') || rest.includes('-h')) { help('S'); return; }
+    needRoot();
     const asdeps = rest.includes('--asdeps');
     const targets = rest.filter(a => !a.startsWith('-'));
     if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
     await installPackages(targets, { ...opts, asdeps });
     return;
   }
-  if (raw === '--upgrade') { needRoot();
+  if (raw === '--upgrade') {
+    if (rest.includes('--help') || rest.includes('-h')) { help('U'); return; }
+    needRoot();
     const targets = stripRepo(rest.filter(a => !a.startsWith('-')));
     if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
     if (targets.length === 1) {
@@ -176,7 +256,9 @@ export async function parseArgs(args: string[]): Promise<void> {
     }
     return;
   }
-  if (raw === '--remove') { needRoot();
+  if (raw === '--remove') {
+    if (rest.includes('--help') || rest.includes('-h')) { help('R'); return; }
+    needRoot();
     const targets = rest.filter(a => !a.startsWith('-'));
     if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
     for (const n of targets) {
@@ -185,11 +267,14 @@ export async function parseArgs(args: string[]): Promise<void> {
     return;
   }
   if (raw === '--query') {
+    if (rest.includes('--help') || rest.includes('-h')) { help('Q'); return; }
     if (rest.length === 0) listInstalled();
     else showInfo(rest[0], false);
     return;
   }
-  if (raw === '--database') { needRoot();
+  if (raw === '--database') {
+    if (rest.includes('--help') || rest.includes('-h')) { help('D'); return; }
+    needRoot();
     const asdeps = rest.includes('--asdeps');
     const asexplicit = rest.includes('--asexplicit');
     const targets = rest.filter(a => !a.startsWith('-'));
@@ -198,11 +283,13 @@ export async function parseArgs(args: string[]): Promise<void> {
     return;
   }
   if (raw === '--files') {
+    if (rest.includes('--help') || rest.includes('-h')) { help('F'); return; }
     if (rest[0] === '-y' || rest[0] === 'y') { console.log(t_('file_db_not_maintained')); return; }
     if (rest.length > 0) queryFile(rest[0]);
     return;
   }
   if (raw === '--deptest') {
+    if (rest.includes('--help') || rest.includes('-h')) { help('T'); return; }
     checkDeps(rest);
     return;
   }
@@ -225,7 +312,10 @@ export async function parseArgs(args: string[]): Promise<void> {
   }
 
   if (op === 'h') { help(); return; }
-  if (op === 'V') { console.log(t_('version_string', VERSION)); return; }
+  if (op === 'V') { showVersion(); return; }
+
+  // Check for help request in flags or rest
+  if (flags.includes('h') || rest.includes('--help') || rest.includes('-h')) { help(op); return; }
 
   if (op === 'S' || op === 'U') {
     const doRefresh = flags.includes('y');
@@ -248,7 +338,7 @@ export async function parseArgs(args: string[]): Promise<void> {
         const p = results[i];
         const inst = dpkg.get(p.package);
         const tag = inst ? t_('search_result_installed', t_('installed'), inst.version) : '';
-        console.log(t_('search_result_line', p.repo, p.package, p.version) + tag);
+         console.log(`${color.repo(p.repo)}/${color.pkg(p.package)} ${color.title(p.version)}` + tag);
         if (p.description) console.log(t_('search_result_desc', p.description));
       }
       if (results.length > 50) console.log(t_('search_more_results', String(results.length - 50)));
@@ -282,7 +372,7 @@ export async function parseArgs(args: string[]): Promise<void> {
       return;
     }
     needRoot();
-    if (doRefresh && doUpgrade) { log('operation: sync+upgrade'); await syncAndUpgrade(opts); return; }
+     if (doRefresh && doUpgrade) { log('operation: sync+upgrade'); await syncAndUpgrade(opts, forceRefresh, rest.filter(a => !a.startsWith('-'))); return; }
     if (doRefresh) {
       process.stdout.write(t_('syncing_databases') + '\n');
       log('operation: sync');
@@ -315,7 +405,6 @@ export async function parseArgs(args: string[]): Promise<void> {
     const targets = rest.filter(a => !a.startsWith('-'));
     if (targets.length === 0) { console.error(t_('error_no_targets')); return; }
     log(`operation: -R ${targets.join(' ')}`);
-    const flags = raw.slice(2);
     const recursive = flags.includes('s');
     const cascade = flags.includes('c');
     const nodeps = flags.includes('d');
