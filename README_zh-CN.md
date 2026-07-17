@@ -13,6 +13,8 @@
 - **更可靠的本地数据库查询** — 按软件包名称精确匹配，避免把 `pipewire` 和
   `pipewire-bin` 混淆
 - **更接近官方 pacman 的版本输出** — `pacman -V` 和 `pacman pacman` 显示吃豆人图案，版本文本支持本地化
+- **独立 paclink 映射源** — Arch 到 Debian 映射从独立的 `xbodwf/paclinks` 仓库同步，并写入 dpkg `Provides:` 字段
+- **更快的映射事务** — `paclink -Syu` 批量应用映射变化，避免每个软件包重复重写本地索引
 
 **v7.4.0 亮点：**
 - **零 dpkg 依赖** — 版本算法内嵌自 libdpkg，dpkg 状态文件直接解析，不调用
@@ -86,9 +88,11 @@ Arch 到 Debian 的兼容映射需要单独同步：
 sudo paclink -Syu
 ```
 
-`paclink` 将映射文件作为自己的仓库：`-Sy` 同步源，`-Su` 使用缓存源，`-U`
-安装本地映射文件。只有 Debian 目标包已安装时才会创建映射。目标包被删除后，
-对应映射也会删除；如果仍有已安装的 Arch 包依赖该虚拟名称，会显示警告。
+`paclink` 使用独立的[映射仓库](https://github.com/xbodwf/paclinks)：`-Sy`
+同步源，`-Su` 使用缓存源，`-U` 安装本地映射文件。只有 Debian 目标包已安装时
+才会启用映射。生效映射还会写入 dpkg 的 `Provides:` 字段，因此 APT 和 dpkg
+依赖检查也能识别它们。目标包被删除后，对应映射也会删除；如果仍有已安装的
+Arch 包依赖该虚拟名称，会显示警告。验证命令见[paclink 文档](docs/zh-CN/paclink.md)。
 
 ### 开发安装
 

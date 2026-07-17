@@ -40,7 +40,6 @@ Operations:
   -Ql [name]                 List mapping records
   -Qs <keyword>              Search mapping packages
   -Qo <deb_pkg>              Show Arch names provided by a Debian package
-  -I                         Initialize all common mappings from dpkg status
   -Ln <deb_pkg> <virt_name>  Create link (maps Debian package to Arch virtual name)
   -L                         List all links
   -Ls <keyword>              Search links
@@ -48,7 +47,8 @@ Operations:
   -R <virt_name>             Remove link
 
 Examples:
-  paclink -I                 Create mappings for all installed Debian packages
+  paclink -Sy                Sync the standalone mapping source
+  paclink -Syu               Activate mappings for installed Debian packages
   paclink -Ln dash sh        Map dash as sh
   paclink -Ln bash sh        Map bash as sh
   paclink -Ln python3 python Map python3 as python
@@ -71,12 +71,18 @@ Arguments:
   unknown_op: 'Error: unknown operation "{0}"',
   error_prefix: "error: {0}",
   source_up_to_date: ":: paclink source is up to date: {0}",
-  source_downloaded: ":: Downloaded {0} mapping rules to {1}",
+  syncing_source: ":: Synchronizing paclink database...",
+  source_download_start: " paclinks",
+  source_downloaded: ":: Synchronized {0} mapping rules",
   source_missing: "error: no cached paclink source; run paclink -Sy first",
   source_invalid: "error: downloaded paclink source is empty or invalid",
   source_invalid_file: "error: invalid paclink mapping file: {0}",
   source_count: ":: Found {0} mapping rules",
-  mapping_changes: ":: Mapping changes: {0} to remove, {1} to update",
+  mapping_changes: "Packages ({0})",
+  mapping_header: "  Name                 OldVer                 NewVer                 Debian Target",
+  mapping_none: " there is nothing to do",
+  mapping_remove_count: ":: Mappings to remove: {0}",
+  mapping_new: "new",
   confirm_changes: ":: Apply mapping changes? [Y/n] ",
   mapping_removed: "warning: removed paclink {0} -> {1}; target package is not installed",
   mapping_depends: "warning: {0} still depends on virtual package {1}",
@@ -96,12 +102,12 @@ Arguments:
   query_installed: "installed",
   query_mapping: "mapping",
   usage_query: "Usage: paclink -Q | -Qi [name] | -Ql [name] | -Qs <keyword> | -Qo <deb>",
-  source_file_missing: "No {0} found. Run setup or create one with Arch-to-Debian mappings.",
+  source_file_missing: "No {0} found. Run paclink -Sy or create one with Arch-to-Debian mappings.",
   source_file_example: "Example: glibc libc6",
-  init_none: "No Debian packages found for any common mappings.",
+  init_none: "No installed Debian targets match the mapping source.",
   init_found: ":: Found {0} installable mappings:",
   init_more: "  ... and {0} more",
-  init_created: ":: Created {0} paclink mappings.",
+  init_created: ":: Activated {0} paclink mappings.",
 };
 
 export default _messages;

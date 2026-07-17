@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { addPackage, removePackage, getPackage, listPackageNames } from '../db/localdb';
+import { addPackage, removePackage, replacePackages, getPackage, listPackageNames } from '../db/localdb';
 import { readDpkgStatus, refreshDpkgProvides } from '../db/dpkg-compat';
 import { addPaclink, removePaclink, writePaclinks, readPaclinks, parsePaclinkText } from '../core/paclinks';
 import type { InstalledPackage } from '../core/types';
@@ -9,6 +9,7 @@ import { execSync } from 'node:child_process';
 import * as https from 'node:https';
 import * as http from 'node:http';
 import { URL } from 'node:url';
+import { drawProgressBar, formatRate, formatETA, humanSize } from '../ui/progress';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
@@ -45,7 +46,7 @@ function loadPaclinkConfig(): PaclinkConfig {
     const key = line.slice(0, eq).trim().toLowerCase();
     const value = line.slice(eq + 1).trim();
     if (key === 'color' && (value === 'always' || value === 'auto' || value === 'never')) config.color = value;
-    else if (key === 'server') config.server = value;
+    else if (key === 'server') config.server = value.includes('pacman-debian/main/resources/paclinks.conf') ? DEFAULT_SOURCE : value;
     else if (key === 'cachedir') config.cache = path.join(value, 'paclinks.conf');
     else if (key === 'cachefile') config.cache = value;
   }
@@ -96,8 +97,25 @@ function downloadSource(url: string, destination: string, redirects = 0): Promis
         return;
       }
       const output = fs.createWriteStream(destination, { mode: 0o644 });
+      const total = Number(response.headers['content-length'] || 0);
+      const started = Date.now();
+      let received = 0;
+      const width = Math.max((process.stdout.columns || 80) - 52, 10);
+      const showProgress = () => {
+        if (!process.stdout.isTTY) return;
+        const elapsed = Math.max((Date.now() - started) / 1000, 0.001);
+        const rate = received / elapsed;
+        const pct = total > 0 ? Math.min(received / total * 100, 100) : 0;
+        const eta = total > received && rate > 0 ? (total - received) / rate : 0;
+        const size = total > 0 ? `${humanSize(received, 1).val} ${humanSize(received, 1).unit}/${humanSize(total, 1).val} ${humanSize(total, 1).unit}` : `${humanSize(received, 1).val} ${humanSize(received, 1).unit}`;
+        process.stdout.write(`\r\x1b[K ${drawProgressBar(pct, width)} ${total > 0 ? String(Math.floor(pct)).padStart(3) : '---'}% ${size.padStart(20)} ${formatRate(rate)} ${formatETA(eta)}`);
+      };
+      response.on('data', chunk => { received += chunk.length; showProgress(); });
       response.pipe(output);
-      output.on('finish', () => output.close(() => resolve()));
+      output.on('finish', () => {
+        if (process.stdout.isTTY) process.stdout.write('\r\x1b[K');
+        output.close(() => resolve());
+      });
       output.on('error', reject);
       response.on('error', reject);
     });
@@ -108,6 +126,7 @@ function downloadSource(url: string, destination: string, redirects = 0): Promis
 
 async function rebuildInstalledLinks(source: string, noconfirm: boolean): Promise<void> {
   const installed = installedDebianNames();
+  const dpkg = readDpkgStatus();
   const candidates = sourceEntries(source);
   const active = candidates.filter(e => installed.has(e.deb));
   const activeByVirt = new Map<string, { virt: string; deb: string }>();
@@ -115,31 +134,47 @@ async function rebuildInstalledLinks(source: string, noconfirm: boolean): Promis
   const current = readPaclinks();
   const currentByVirt = new Map(current.map(e => [e.virt, e]));
   const removed = current.filter(e => !activeByVirt.has(e.virt));
-  const changed = active.filter(e => currentByVirt.get(e.virt)?.deb !== e.deb);
+  const changed = [...activeByVirt.values()].filter(e => currentByVirt.get(e.virt)?.deb !== e.deb);
 
-  if (!noconfirm && (removed.length || changed.length)) {
-    console.log(t('mapping_changes', removed.length, changed.length));
-    if (!await confirm(t('confirm_changes'))) return;
+  if (!changed.length && !removed.length) {
+    console.log(t('mapping_none'));
+    return;
+  }
+
+  if (changed.length) {
+    console.log(t('mapping_changes', changed.length));
+    console.log(t('mapping_header'));
+    for (const entry of changed) {
+      const info = dpkg.get(entry.deb);
+      const oldPkg = getPackage(entry.virt);
+      const oldVersion = oldPkg?.version || t('mapping_new');
+      const newVersion = info?.version || '-';
+      const cell = (value: string, width: number) => (value.length > width ? `${value.slice(0, width - 3)}...` : value).padEnd(width);
+      console.log(`  ${color.pkg(cell(entry.virt, 20))} ${color.muted(cell(oldVersion, 22))} ${color.ok(cell(newVersion, 22))} ${color.local(entry.deb)}`);
+    }
+  }
+  if (removed.length) console.log(t('mapping_remove_count', removed.length));
+  if (!noconfirm && !await confirm(t('confirm_changes'))) {
+    console.log(t('cancelled'));
+    return;
   }
 
   for (const entry of removed) {
     console.warn(color.warn(t('mapping_removed', entry.virt, entry.deb)));
     const dependent = dependsOnVirt(entry.virt);
     if (dependent) console.warn(color.warn(t('mapping_depends', dependent, entry.virt)));
-    const link = getPackage(entry.virt);
-    if (link?.repoType === 'link') removePackage(entry.virt, link.version);
   }
+  const linkPackages: InstalledPackage[] = [];
   for (const entry of changed) {
-    const existing = getPackage(entry.virt);
-    if (existing?.repoType === 'link') removePackage(entry.virt, existing.version);
-    const info = readDpkgStatus().get(entry.deb);
+    const info = dpkg.get(entry.deb);
     if (!info) continue;
-    addPackage({
+    linkPackages.push({
       name: entry.virt, version: info.version || '0', architecture: info.architecture || process.arch,
       description: `Virtual package - links to Debian package ${entry.deb}`, provides: entry.virt,
       depends: entry.deb, installTime: Math.floor(Date.now() / 1000), reason: 'explicit', files: [], repoType: 'link',
     });
   }
+  replacePackages(linkPackages, removed.map(entry => entry.virt));
   writePaclinks([...activeByVirt.values()]);
   await refreshDpkgProvides();
   console.log(activeByVirt.size ? t('mappings_active', activeByVirt.size) : t('mappings_none'));
@@ -148,8 +183,10 @@ async function rebuildInstalledLinks(source: string, noconfirm: boolean): Promis
 async function syncSource(force: boolean): Promise<void> {
   const config = loadPaclinkConfig();
   const cache = config.cache;
+  console.log(t('syncing_source'));
   fs.mkdirSync(path.dirname(cache), { recursive: true });
   const tmp = `${cache}.tmp-${process.pid}`;
+  if (process.stdout.isTTY) process.stdout.write(`${t('source_download_start')} `);
   await downloadSource(config.server, tmp);
   const entries = sourceEntries(tmp);
   if (!entries.length) { fs.unlinkSync(tmp); throw new Error(t('source_invalid')); }
