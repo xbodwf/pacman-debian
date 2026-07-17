@@ -21,6 +21,8 @@ export interface PkgInfo {
 export interface InstallScript {
   pre_install?: string;
   post_install?: string;
+  pre_upgrade?: string;
+  post_upgrade?: string;
   pre_remove?: string;
   post_remove?: string;
 }
@@ -67,7 +69,7 @@ function parsePKGINFO(content: string): PkgInfo {
 
 function parseInstallScript(content: string): InstallScript {
   const script: InstallScript = {};
-  const funcs = ['pre_install', 'post_install', 'pre_remove', 'post_remove'];
+  const funcs = ['pre_install', 'post_install', 'pre_upgrade', 'post_upgrade', 'pre_remove', 'post_remove'];
   for (const fn of funcs) {
     const re = new RegExp(`${fn}\\s*\\(\\)\\s*\\{([\\s\\S]*?)\\n\\}`, 'm');
     const m = content.match(re);

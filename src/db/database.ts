@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import * as localdb from './localdb';
 import type { InstalledPackage, Database, Transaction } from '../core/types';
 
@@ -66,9 +67,20 @@ export function runScript(pkgName: string, name: string, args: string[]): boolea
   const fp = path.join(INFO_DIR, pkgName, name);
   if (!fs.existsSync(fp)) return true;
   try {
-    const { execSync } = require('node:child_process');
-    execSync(`/bin/sh "${fp}" ${args.join(' ')}`, {
-      stdio: 'inherit', env: { ...process.env, DEBIAN_FRONTEND: 'noninteractive' },
+    const helperDir = '/tmp/pacman-debian-script-bin';
+    const helper = path.join(helperDir, 'vercmp');
+    fs.mkdirSync(helperDir, { recursive: true });
+    fs.writeFileSync(helper, `#!/bin/sh\nnode -e 'const d=require("${path.resolve(__dirname, '../core/deps.js')}"); process.stdout.write(String(d.verCmp(process.argv[1], process.argv[2])) + "\\n")' "$1" "$2"\n`, { mode: 0o755 });
+    const envPath = `${helperDir}:${process.env.PATH || '/usr/bin:/bin'}`;
+    execFileSync('/bin/sh', [fp, ...args], {
+      stdio: 'inherit', env: {
+        ...process.env,
+        PATH: envPath,
+        DEBIAN_FRONTEND: 'noninteractive',
+        DPKG_MAINTSCRIPT_NAME: name,
+        DPKG_MAINTSCRIPT_PACKAGE: pkgName,
+        DPKG_MAINTSCRIPT_ARCH: process.arch,
+      },
     });
     return true;
   } catch {

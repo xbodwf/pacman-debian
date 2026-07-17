@@ -4,7 +4,9 @@ import * as https from 'node:https';
 import * as http from 'node:http';
 import * as net from 'node:net';
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { parseDeb, readScript } from '../core/deb';
+import { listTarEntries } from '../core/tar';
 import { extractTar, safeTargetPath } from '../core/tar';
 import type { ProgressCallback } from '../core/tar';
 import { parsePkgTarZst } from '../core/pkgfile';
@@ -15,16 +17,61 @@ import {
   initDb, loadDatabase, saveDatabase, addPackage, isInstalled, getPackage,
   saveScript, runScript, createTransaction, completeTransaction, parseDepends,
 } from '../db/database';
-import { writeDpkgEntry, dpkgHasPackage } from '../db/dpkg-compat';
+import { writeDpkgEntry, dpkgHasPackage, readDpkgStatus } from '../db/dpkg-compat';
 import { acquireDpkgLock, releaseDpkgLock } from '../lock/dpkg-lock';
 import { removePackage, getPackage as getLocalPkg } from '../db/localdb';
 import { resolveDeps, detectConflicts } from '../core/deps';
 import { formatBytes } from '../ui/format';
+import { color } from '../ui/colors';
 import { humanSize, drawProgressBar, formatRate, formatETA, terminalWidth } from '../ui/progress';
 import { confirm } from '../ui/prompt';
 import { t } from '../i18n';
 import type { InstalledPackage, RepoPkg } from '../core/types';
 import type { InstallOptions } from '../core/options';
+
+function sourceRepo(pkg: InstalledPackage): string {
+  return pkg.repo || pkg.repoType || 'unknown';
+}
+
+function distRepo(pkg: RepoPkg): string {
+  return pkg.repo || pkg.repoType || 'unknown';
+}
+
+function refreshLoaderCache(): void {
+  try { execSync('/usr/sbin/ldconfig', { stdio: 'inherit' }); } catch {}
+}
+
+async function confirmSourceTakeover(items: Array<{ existing: InstalledPackage; incoming: RepoPkg }>, opts: InstallOptions): Promise<boolean> {
+  if (items.length === 0 || opts.takeoverConfirmed) return true;
+  for (const { existing, incoming } of items) {
+    if (existing.repoType === incoming.repoType) continue;
+    console.warn(color.warn(t('source_takeover_warning', existing.name, sourceRepo(existing), distRepo(incoming))));
+  }
+  return confirm(t('source_takeover_confirm'), false);
+}
+
+function archiveTakeovers(downloaded: Array<{ pkg: RepoPkg; path: string }>, db: ReturnType<typeof loadDatabase>): Array<{ existing: InstalledPackage; incoming: RepoPkg }> {
+  const result = new Map<string, { existing: InstalledPackage; incoming: RepoPkg }>();
+  for (const { pkg, path: filePath } of downloaded) {
+    let files: string[] = [];
+    try {
+      if (filePath.endsWith('.deb')) {
+        files = listTarEntries(parseDeb(filePath).dataTar)
+          .filter(name => !name.endsWith('/'))
+          .map(name => `/${name.replace(/^\.\//, '').replace(/^\/+/, '')}`);
+      } else {
+        files = parsePkgTarZst(fs.readFileSync(filePath)).files.filter(name => !name.endsWith('/'));
+      }
+    } catch { continue; }
+    for (const file of files) {
+      const ownerName = db.fileIndex.get(file);
+      if (!ownerName || ownerName === pkg.package) continue;
+      const existing = db.packages.get(ownerName);
+      if (existing && existing.repoType && existing.repoType !== pkg.repoType) result.set(`${ownerName}:${pkg.package}`, { existing, incoming: pkg });
+    }
+  }
+  return [...result.values()];
+}
 
 async function installDeb(filePath: string, reason: 'explicit' | 'dependency', opts: InstallOptions = {}, onProgress?: ProgressCallback): Promise<boolean> {
   initDb();
@@ -43,28 +90,26 @@ async function installDeb(filePath: string, reason: 'explicit' | 'dependency', o
     if (realFiles.length > 0) return true;
   }
 
-  await acquireDpkgLock();
-  try {
-  const tx = createTransaction('install', control.package, control.version);
+   await acquireDpkgLock();
+   try {
+   const tx = createTransaction('install', control.package, control.version);
+   refreshLoaderCache();
   if (!opts.noscriptlet) {
     const preinst = readScript(pkg, 'preinst');
     if (preinst) saveScript(control.package, 'preinst', preinst);
-    runScript(control.package, 'preinst', ['install']);
+    if (!runScript(control.package, 'preinst', ['install'])) throw new Error(`${control.package}: preinst failed`);
   }
 
-  const files = extractTar(pkg.dataTar, '/', onProgress, _cfg.noExtract, _cfg.noUpgrade);
+   const files = extractTar(pkg.dataTar, '/', onProgress, _cfg.noExtract, _cfg.noUpgrade);
+   refreshLoaderCache();
 
   if (!opts.noscriptlet) {
     const postinst = readScript(pkg, 'postinst');
     if (postinst) saveScript(control.package, 'postinst', postinst);
-    runScript(control.package, 'postinst', ['configure']);
+    if (!runScript(control.package, 'postinst', ['configure'])) throw new Error(`${control.package}: postinst failed`);
   }
 
-  // Run ldconfig if package installs shared libraries
-  const hasSoFiles = files.some(f => /\.so(\.|$)/.test(f));
-  if (hasSoFiles) {
-    try { execSync('/usr/sbin/ldconfig', { stdio: 'inherit' }); } catch {}
-  }
+   refreshLoaderCache();
 
   const ip: InstalledPackage = {
     name: control.package, version: control.version,
@@ -106,22 +151,37 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
   removeLinkIfPresent(info.name);
   const existing = getPackage(db, info.name);
   if (opts.needed && existing && existing.version === info.version) return false;
-
   await acquireDpkgLock();
-  try {
-  const tx = createTransaction('install', info.name, info.version);
+   try {
+   const tx = createTransaction('install', info.name, info.version);
+   refreshLoaderCache();
 
-  if (!opts.noscriptlet && (install?.pre_install || install?.post_install)) {
+   // A Debian-installed package may not have a pacman-debian local record
+   // yet. It is still an upgrade, and its Arch .INSTALL may only define the
+   // post_upgrade hook.
+   const dpkgExisting = readDpkgStatus().get(info.name);
+   const isUpgrade = !!existing || !!dpkgExisting;
+   const oldVersion = existing?.version || dpkgExisting?.version || '';
+  const scriptBin = '/tmp/pacman-debian-script-bin';
+  fs.mkdirSync(scriptBin, { recursive: true });
+  const vercmpPath = path.join(scriptBin, 'vercmp');
+  fs.writeFileSync(vercmpPath, `#!/bin/sh\nnode -e 'const d=require("${path.resolve(__dirname, '../core/deps.js')}"); process.stdout.write(String(d.verCmp(process.argv[1], process.argv[2])) + "\\n")' "$1" "$2"\n`, { mode: 0o755 });
+  const scriptEnv = { ...process.env, PATH: `${scriptBin}:${process.env.PATH || '/usr/bin:/bin'}` };
+  if (!opts.noscriptlet && (install?.pre_install || install?.post_install || install?.pre_upgrade || install?.post_upgrade)) {
     const parts: string[] = [];
     if (install.pre_install) parts.push(`pre_install() {\n${install.pre_install}\n}`);
     if (install.post_install) parts.push(`post_install() {\n${install.post_install}\n}`);
+    if (install.pre_upgrade) parts.push(`pre_upgrade() {\n${install.pre_upgrade}\n}`);
+    if (install.post_upgrade) parts.push(`post_upgrade() {\n${install.post_upgrade}\n}`);
     if (install.pre_remove) parts.push(`pre_remove() {\n${install.pre_remove}\n}`);
     if (install.post_remove) parts.push(`post_remove() {\n${install.post_remove}\n}`);
     const script = parts.join('\n') + '\n';
     saveScript(info.name, '.INSTALL', script);
     const tmpScript = `/var/lib/pacman-debian/info/${info.name}/.INSTALL`;
-    if (install?.pre_install) {
-      try { execSync(`/bin/bash -c 'source "${tmpScript}" && pre_install' 2>&-`, { stdio: 'pipe' }); } catch {}
+    const preHook = isUpgrade ? 'pre_upgrade' : 'pre_install';
+    if (install?.[preHook]) {
+      try { execSync(`/bin/bash -c 'source "${tmpScript}" && ${preHook} "$1" "$2"' -- "${info.version}" "${oldVersion}"`, { stdio: 'inherit', env: scriptEnv, cwd: '/' }); }
+      catch { throw new Error(`${info.name}: ${preHook} failed`); }
     }
   }
 
@@ -138,28 +198,32 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
       fs.mkdirSync(path.dirname(targetPath), { recursive: true });
       if (_archCfg.noUpgrade.some(p => matchArch(p, entry.name)) && fs.existsSync(targetPath)) {
         const bak = targetPath + '.pacnew';
-        fs.writeFileSync(bak, entry.data, { mode: 0o755 });
+        const tmp = `${bak}.pacman-debian.tmp-${process.pid}`;
+        fs.writeFileSync(tmp, entry.data, { mode: 0o755 });
+        fs.renameSync(tmp, bak);
       } else {
         if (fs.existsSync(targetPath) && fs.lstatSync(targetPath).isSymbolicLink()) fs.unlinkSync(targetPath);
-        fs.writeFileSync(targetPath, entry.data, { mode: 0o755 });
+        const tmp = `${targetPath}.pacman-debian.tmp-${process.pid}`;
+        fs.writeFileSync(tmp, entry.data, { mode: 0o755 });
+        fs.renameSync(tmp, targetPath);
       }
     }
     onProgress?.(i + 1, total, entry.name);
   }
 
-  if (!opts.noscriptlet && install?.post_install) {
+   // Hooks may execute binaries or shared libraries from this package.
+   refreshLoaderCache();
+
+  if (!opts.noscriptlet && (install?.post_install || install?.post_upgrade)) {
     const tmpScript = `/var/lib/pacman-debian/info/${info.name}/.INSTALL`;
     if (!fs.existsSync(tmpScript)) {
-      saveScript(info.name, '.INSTALL', `post_install() {\n${install.post_install}\n}\n`);
+      saveScript(info.name, '.INSTALL', `post_install() {\n${install.post_install || ''}\n}\npost_upgrade() {\n${install.post_upgrade || ''}\n}\n`);
     }
-    try { execSync(`/bin/bash -c 'source "${tmpScript}" && post_install' 2>&-`, { stdio: 'pipe' }); } catch {}
-  }
-
-  // Run ldconfig if package installs shared libraries
-  const hasSoFiles = files.some(f => /\.so(\.|$)/.test(f));
-  if (hasSoFiles) {
-    try { execSync('/usr/sbin/ldconfig', { stdio: 'inherit' }); } catch {}
-  }
+    const postHook = isUpgrade ? 'post_upgrade' : 'post_install';
+   try { execSync(`/bin/bash -c 'source "${tmpScript}" && ${postHook} "$1" "$2"' -- "${info.version}" "${oldVersion}"`, { stdio: 'inherit', env: scriptEnv, cwd: '/' }); }
+   catch { throw new Error(`${info.name}: ${postHook} failed`); }
+   }
+   refreshLoaderCache();
 
   const ip: InstalledPackage = {
     name: info.name, version: info.version,
@@ -344,7 +408,7 @@ export async function installPkg(target: string, opts: InstallOptions = {}): Pro
     return `[${'#'.repeat(filled)}${'-'.repeat(barLen - filled)}] ${String(pct).padStart(3)}%`;
   };
 
-  console.log(t('packages_single', fname) + '\n');
+  console.log(color.title(t('packages_single', fname)) + '\n');
   if (!await confirm(t('confirm_proceed'))) return true;
   if (opts.print) { console.log(t('would_install', fname)); return true; }
   process.stdout.write(`(1/1) ${t('progress_loading_files_msg')} ${drawBar(0)}`);
@@ -371,15 +435,15 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
 
   // Validate targets exist (support repo/pkgname syntax)
   const targetPkgs: RepoPkg[] = [];
-  for (const target of targets) {
+  for (const [index, target] of targets.entries()) {
     const sl = target.indexOf('/');
     const repo = sl > 0 ? target.slice(0, sl) : undefined;
     const requested = sl > 0 ? target.slice(sl + 1) : target;
     const eq = requested.indexOf('=');
     const name = eq >= 0 ? requested.slice(0, eq) : requested;
     const version = eq >= 0 ? requested.slice(eq + 1) : undefined;
-    const rp = version ? findInRepoVersioned(name, version, repo)
-      : (repo ? findInRepoScoped(repo, name) : findInRepo(name));
+    const rp = opts.preparedPackages?.[index] || (version ? findInRepoVersioned(name, version, repo)
+      : (repo ? findInRepoScoped(repo, name) : findInRepo(name)));
     const displayName = target;
     if (!rp) {
       const cacheDir = '/var/cache/pacman-debian/packages';
@@ -399,7 +463,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   if (targetPkgs.length === 0) return 0;
 
   // Resolve dependencies
-  console.log(t('resolving_deps'));
+  if (!opts.skipDependencyResolution) console.log(color.title(t('resolving_deps')));
   const preferredRepos = new Map<string, string[]>();
   if (!loadConfig().notFindDepsFromCurrentRepo) {
     for (const target of targets) {
@@ -417,8 +481,10 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     const eq = requested.indexOf('=');
     return prefix + (eq >= 0 ? requested.slice(0, eq) : requested);
   });
-  const { install: depResults, errors: depErrors } = resolveDeps(depTargets, { preferredRepos });
-  for (const err of depErrors) console.error(t('warn_prefix', err));
+  const { install: depResults, errors: depErrors } = opts.skipDependencyResolution
+    ? { install: [], errors: [] }
+    : resolveDeps(depTargets, { preferredRepos });
+  for (const err of depErrors) console.error(color.warn(t('warn_prefix', err)));
   if (depErrors.length > 0) throw new Error('dependency resolution failed');
 
   // Dedupe: deps first, then targets (Arch pacman convention)
@@ -441,14 +507,14 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   }
 
   // Conflict detection
-  console.log(t('checking_conflicts') + '\n');
+  if (!opts.skipSummary) console.log(color.title(t('checking_conflicts')) + '\n');
   const conflicts = detectConflicts(allPkgs);
   for (const c of conflicts) {
-    console.error(`  ${c.reason}`);
+    console.error(`  ${color.error(c.reason)}`);
   }
   if (conflicts.length > 0) {
     console.error('');
-    console.error(t('error_unresolvable_conflicts'));
+    console.error(color.error(t('error_unresolvable_conflicts')));
     throw new Error('unresolvable package conflicts detected');
   }
 
@@ -456,7 +522,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   const totalInst = allPkgs.reduce((s, p) => s + ((p.installedSize || 0) * 1024), 0);
 
   const _cfg = loadConfig();
-  if (_cfg.verbosePkgLists) {
+  if (!opts.skipSummary && _cfg.verbosePkgLists) {
     const cols = process.stdout.columns || 80;
     const nameW = Math.max(20, Math.floor(cols * 0.3));
     const verW = Math.max(16, Math.floor(cols * 0.2));
@@ -467,17 +533,25 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     for (const p of allPkgs) {
       const name = p.package.length > nameW ? p.package.slice(0, nameW - 3) + '...' : p.package;
       const ver = (p.version || '').length > verW ? (p.version || '').slice(0, verW - 3) + '...' : (p.version || '');
-      console.log(`  ${name.padEnd(nameW)} ${ver.padEnd(verW)} ${p.repo.padEnd(repoW)} ${formatBytes(p.size || 0).padStart(8)}`);
+      console.log(`  ${color.pkg(name.padEnd(nameW))} ${color.title(ver.padEnd(verW))} ${color.repo(p.repo.padEnd(repoW))} ${color.size(formatBytes(p.size || 0).padStart(8))}`);
     }
-  } else {
-    console.log(t('packages_multi', String(allPkgs.length), allPkgs.map(p => p.package).join('  ')));
+  } else if (!opts.skipSummary) {
+    console.log(t('packages_multi', String(allPkgs.length), allPkgs.map(p => color.pkg(p.package)).join('  ')));
   }
-  console.log('');
-  console.log(t('total_download_size', formatBytes(totalSize).padStart(9)));
-  console.log(t('total_installed_size', formatBytes(totalInst).padStart(9)));
-  console.log('');
+  if (!opts.skipSummary) {
+    console.log('');
+    console.log(t('total_download_size', color.size(formatBytes(totalSize).padStart(9))));
+    console.log(t('total_installed_size', color.size(formatBytes(totalInst).padStart(9))));
+    console.log('');
+  }
 
-  if (!await confirm(t('confirm_proceed'))) return 0;
+  const takeover = new Map<string, { existing: InstalledPackage; incoming: RepoPkg }>();
+  const currentDb = loadDatabase();
+  for (const p of allPkgs) {
+    const existing = currentDb.packages.get(p.package);
+    if (existing && existing.repoType && existing.repoType !== p.repoType) takeover.set(p.package, { existing, incoming: p });
+  }
+  if (!opts.confirmed && !await confirm(t('confirm_proceed'))) return 0;
 
   if (opts.print) {
     for (const p of allPkgs) console.log(t('would_install', `${p.package}-${p.version}`));
@@ -507,7 +581,21 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   const nameWidth = Math.max(25, Math.floor(cols * 0.35));
   let dlIdx = 0;
 
-  const downloadOne = async (p: RepoPkg): Promise<{ pkg: RepoPkg; path: string; rate: number }> => {
+  // Keep concurrent downloads on separate terminal rows instead of allowing
+  // workers to overwrite each other's single-line progress display.
+  const activeRows = Math.min(parallelN, total);
+  const downloadRows = Array.from({ length: activeRows }, () => '');
+  const renderDownloadRow = (slot: number, line: string) => {
+    downloadRows[slot] = line;
+    if (opts.noProgressBar || !process.stdout.isTTY) return;
+    const up = activeRows - slot;
+    process.stdout.write(`\x1b[${up}A\r\x1b[2K${line}\x1b[${up}B`);
+  };
+  if (!opts.noProgressBar && process.stdout.isTTY && activeRows > 1) {
+    process.stdout.write('\n'.repeat(activeRows));
+  }
+
+  const downloadOne = async (p: RepoPkg, slot: number): Promise<{ pkg: RepoPkg; path: string; rate: number }> => {
     const idx = ++dlIdx;
     const digits = String(total).length;
     const prefix = `(${String(idx).padStart(digits)}/${String(total).padEnd(digits)})`;
@@ -533,7 +621,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
         `] ${String(pct).padStart(3)}%`,
         pct,
       );
-      process.stdout.write(`\r${line}`);
+      renderDownloadRow(slot, line);
     });
 
     const finalSize = humanSize(p.size || 0, 1);
@@ -542,24 +630,38 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       `] 100%`,
       100,
     );
-    process.stdout.write(`\r${compLine}\n`);
+    if (opts.noProgressBar) return { pkg: p, path: localPath, rate: finalRate };
+    renderDownloadRow(slot, compLine);
+    if (!process.stdout.isTTY) process.stdout.write(compLine + '\n');
     return { pkg: p, path: localPath, rate: finalRate };
   };
 
   // Parallel download
   const queue = [...allPkgs];
-  const doBatch = async () => {
+  const doBatch = async (slot: number) => {
     while (queue.length > 0) {
       const pkg = queue.shift()!;
-      const r = await downloadOne(pkg);
+      const r = await downloadOne(pkg, slot);
       downloaded.push(r);
     }
   };
-  const workers = Array.from({ length: Math.min(parallelN, total) }, () => doBatch());
+  const workers = Array.from({ length: activeRows }, (_, slot) => doBatch(slot));
   try {
     await Promise.all(workers);
   } catch (error) {
     throw new Error(`package download failed: ${(error as Error).message}`);
+  }
+
+  // File-level takeover can only be known after archives are available. Ask
+  // once before integrity checks and any system mutation.
+  if (!opts.takeoverConfirmed) {
+    for (const item of archiveTakeovers(downloaded, currentDb)) {
+      takeover.set(`${item.existing.name}:${item.incoming.package}`, item);
+    }
+    if (takeover.size > 0 && !await confirmSourceTakeover([...takeover.values()], opts)) {
+      throw new Error('package source takeover cancelled');
+    }
+    if (takeover.size > 0) opts = { ...opts, takeoverConfirmed: true };
   }
 
   // 汇总行
@@ -576,65 +678,27 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   );
   process.stdout.write(totalLine + '\n');
 
-  // ---- Pre-install checks (after download, matching real pacman order) ----
-  const totalChk = downloaded.length;
-  const digitsChk = String(totalChk).length;
-  let chkIdx = 0;
-  const prefixChk = () => `(${String(++chkIdx).padStart(digitsChk)}/${String(totalChk).padEnd(digitsChk)})`;
-  const checkMessages = [
-    t('progress_checking_keys_msg'),
-    t('progress_checking_integrity_msg'),
-    t('progress_loading_files_msg'),
-    t('progress_checking_conflicts_msg'),
-    t('progress_checking_space_msg'),
-  ];
-  const maxChkMsgTw = Math.max(...checkMessages.map(m => terminalWidth(m)));
-
-  const fmtCheck = (msg: string) => {
-    const p = prefixChk();
-    const pad = maxChkMsgTw - terminalWidth(msg);
-    const line = barLine(
-      ` ${p} ${msg}${' '.repeat(pad)} [`,
-      `] 100%`,
-      100,
-    );
-    process.stdout.write(line + '\n');
-  };
-
-  // 1. Keys check
-  fmtCheck(t('progress_checking_keys_msg'));
-
-  // 2. Integrity — verify sha256 of each downloaded file
+  // Verify downloaded archives before changing the system. Run independent
+  // checks concurrently so large upgrades do not wait on 89 serial processes.
+  process.stdout.write(t('progress_checking_integrity_msg') + '\n');
   let integrityOk = true;
-  for (const { pkg: p, path: fp } of downloaded) {
-    if (p.sha256) {
-      const hash = execSync(`sha256sum "${fp}" 2>/dev/null | cut -d' ' -f1`, { encoding: 'utf8', timeout: 10000 }).trim();
-      if (hash !== p.sha256) {
-        console.error(`\n  WARNING: ${p.package}: sha256 mismatch (expected ${p.sha256}, got ${hash})`);
-        integrityOk = false;
-      }
-    }
-  }
-  fmtCheck(t('progress_checking_integrity_msg'));
-
-  // 3. Load files — validate package archive format
-  for (const { pkg: p, path: fp } of downloaded) {
+  const checkOne = async ({ pkg: p, path: fp }: { pkg: RepoPkg; path: string }) => {
     try {
-      if (fp.endsWith('.deb')) { parseDeb(fp); }
-      else execSync(`tar -t --zstd -f "${fp}" 2>/dev/null | head -1`, { encoding: 'utf8', timeout: 5000 });
-    } catch {
-      console.error(`\n  WARNING: ${p.package}: package file appears corrupted`);
+      if (p.sha256) {
+        const hash = createHash('sha256').update(await fs.promises.readFile(fp)).digest('hex');
+        if (hash !== p.sha256) throw new Error(`sha256 mismatch (expected ${p.sha256}, got ${hash})`);
+      }
+      // Arch archives are parsed during installation; avoid a second full
+      // decompression pass here just to validate the same bytes again.
+      if (fp.endsWith('.deb')) parseDeb(fp);
+    } catch (error) {
+      console.error(`\n  ${color.warn('WARNING')}: ${color.pkg(p.package)}: ${(error as Error).message || 'package file appears corrupted'}`);
       integrityOk = false;
     }
-  }
-  fmtCheck(t('progress_loading_files_msg'));
-
+  };
+  await Promise.all(downloaded.map(checkOne));
   if (!integrityOk) throw new Error('package integrity check failed');
 
-  // 4. File conflict check
-  fmtCheck(t('progress_checking_conflicts_msg'));
-
-  // 5. Available space check
   const cfg = loadConfig();
   if (cfg.checkSpace) {
     try {
@@ -645,7 +709,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
         const availKb = parseInt(match[3], 10);
         const needKb = allPkgs.reduce((s, p) => s + ((p.installedSize || 0)), 0);
         if (availKb < needKb) {
-          console.error(`\n  error: not enough disk space (need ${(needKb / 1024).toFixed(1)} MiB, have ${(availKb / 1024).toFixed(1)} MiB)`);
+          console.error(`\n  ${color.error('error')}: not enough disk space (need ${(needKb / 1024).toFixed(1)} MiB, have ${(availKb / 1024).toFixed(1)} MiB)`);
           throw new Error('not enough disk space');
         }
       }
@@ -653,14 +717,19 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       if ((error as Error).message === 'not enough disk space') throw error;
     }
   }
-  fmtCheck(t('progress_checking_space_msg'));
-
   // Hold dpkg locks for the complete system-modifying transaction.
   await acquireDpkgLock();
   try {
-    for (const { pkg: p, path: localPath } of downloaded) {
+    for (let i = 0; i < downloaded.length; i++) {
+      const { pkg: p, path: localPath } = downloaded[i];
       const isExplicit = targetPkgs.some(r => r.package === p.package);
-      const ok = await installPkgFile(localPath, isExplicit ? (opts.asdeps ? 'dependency' : 'explicit') : 'dependency', { ...opts, repo: p.repo });
+      const prefix = `(${String(i + 1).padStart(String(downloaded.length).length)}/${downloaded.length})`;
+      process.stdout.write(`${t('progress_upgrading', String(i + 1), String(downloaded.length), color.pkg(p.package))}\n`);
+      const ok = await installPkgFile(localPath, isExplicit ? (opts.asdeps ? 'dependency' : 'explicit') : 'dependency', { ...opts, repo: p.repo },
+        (done, total, name) => {
+          process.stdout.write(`\r\x1b[K${prefix} ${t('progress_loading_files_msg')} ${name} ${total > 0 ? Math.round(done / total * 100) : 100}%`);
+          if (done >= total) process.stdout.write('\n');
+        });
       if (!ok) throw new Error(`failed to install ${p.package}`);
     }
 

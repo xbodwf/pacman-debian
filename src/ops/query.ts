@@ -4,6 +4,7 @@ import { loadDatabase } from '../db/database';
 import { readDpkgStatus } from '../db/dpkg-compat';
 import { searchRepo, findInRepo } from '../repo/repository';
 import { t } from '../i18n';
+import { color } from '../ui/colors';
 
 export function listInstalled(filter?: string, quiet = false): void {
   const dpkg = readDpkgStatus();
@@ -18,20 +19,20 @@ export function listInstalled(filter?: string, quiet = false): void {
   for (const p of pkgs) {
     if (quiet) { console.log(p.package); continue; }
     const name = p.package.length > nameW ? p.package : p.package.padEnd(nameW);
-    console.log(`${name} ${p.version}`);
+     console.log(`${color.local(name)} ${color.title(p.version)}`);
   }
 }
 
 export function listExplicit(): void {
   const pkgs = localdb.getAllPackages().filter(p => p.reason === 'explicit');
   const nameW = Math.min(Math.max(...pkgs.map(p => p.name.length)) + 2, 30);
-  for (const p of pkgs) console.log(`${p.name.padEnd(nameW)}${p.version}`);
+  for (const p of pkgs) console.log(`${color.local(p.name.padEnd(nameW))}${color.title(p.version)}`);
 }
 
 export function listDeps(): void {
   const pkgs = localdb.getAllPackages().filter(p => p.reason === 'dependency');
   const nameW = Math.min(Math.max(...pkgs.map(p => p.name.length)) + 2, 30);
-  for (const p of pkgs) console.log(`${p.name.padEnd(nameW)}${p.version}`);
+  for (const p of pkgs) console.log(`${color.local(p.name.padEnd(nameW))}${color.title(p.version)}`);
 }
 
 export function listOrphans(): void {
@@ -42,7 +43,7 @@ export function listOrphans(): void {
   }
   const pkgs = localdb.getAllPackages().filter(p => p.reason === 'dependency' && !needed.has(p.name));
   const nameW = Math.min(Math.max(...pkgs.map(p => p.name.length)) + 2, 30);
-  for (const p of pkgs) console.log(`${p.name.padEnd(nameW)}${p.version}`);
+  for (const p of pkgs) console.log(`${color.local(p.name.padEnd(nameW))}${color.title(p.version)}`);
 }
 
 export function checkIntegrity(name?: string): void {
@@ -72,10 +73,10 @@ export function checkIntegrity(name?: string): void {
 export function showInfo(name: string, fromRepo: boolean): void {
   if (fromRepo) {
     const p = findInRepo(name);
-    if (!p) { console.error(t('error_not_found', name)); return; }
-    console.log(t('info_repo', p.repo));
-    console.log(t('info_name', p.package));
-    console.log(t('info_version', p.version));
+     if (!p) { console.error(color.error(t('error_not_found', name))); return; }
+     console.log(t('info_repo', color.repo(p.repo)));
+     console.log(t('info_name', color.pkg(p.package)));
+     console.log(t('info_version', color.title(p.version)));
     console.log(t('info_description', p.description || ''));
     if (p.depends) console.log(t('info_depends', p.depends));
     if (p.size) console.log(t('info_download_size', (p.size / 1024).toFixed(2) + ' KiB'));
@@ -84,7 +85,7 @@ export function showInfo(name: string, fromRepo: boolean): void {
 
   const dpkg = readDpkgStatus();
   const p = dpkg.get(name);
-  if (!p) { console.error(t('error_was_not_found', name)); return; }
+   if (!p) { console.error(color.error(t('error_was_not_found', name))); return; }
 
   const our = localdb.getPackage(name);
   const m = !!our;
@@ -112,7 +113,8 @@ export function showInfo(name: string, fromRepo: boolean): void {
   const maxW = Math.max(...lines.map(([k]) => cjk(k)));
   for (const [k, v] of lines) {
     const pad = maxW - cjk(k);
-    console.log(`${k}${' '.repeat(pad)} : ${v}`);
+     const value = k === 'Name' ? color.pkg(v) : k === 'Version' ? color.title(v) : v;
+     console.log(`${color.muted(k)}${' '.repeat(pad)} : ${value}`);
   }
 }
 
