@@ -18,6 +18,10 @@ packages (including AUR compatibility via yay with a bundled libalpm).
   packages such as `pipewire` and `pipewire-bin` cannot be confused
 - **Pacman-style version output** — `pacman -V` and `pacman pacman` show the Pac-Man
   banner with localized version text
+- **Standalone paclink source** — Arch-to-Debian mappings sync from the separate
+  `xbodwf/paclinks` repository and write dpkg `Provides:` entries
+- **Fast mapping transactions** — `paclink -Syu` applies mapping changes in a
+  batch instead of rewriting local indexes for every package
 
 **Version 7.4.0 highlights:**
 - **Zero dpkg dependency** — version comparison algorithm ported from libdpkg,
@@ -97,11 +101,14 @@ Synchronize Arch-to-Debian compatibility mappings separately:
 sudo paclink -Syu
 ```
 
-`paclink` uses the mapping source as its repository. `-Sy` syncs it, `-Su` uses
-the cached source, and `-U` installs a local mapping file. Mapping packages are
-created only when their Debian targets are installed. Removing a target removes
-the mapping and warns if an installed Arch package still depends on that virtual
-name.
+`paclink` uses the standalone [paclinks repository](https://github.com/xbodwf/paclinks)
+as its mapping source. `-Sy` syncs it, `-Su` uses the cached source, and `-U`
+installs a local mapping file. Mapping packages are activated only when their
+Debian targets are installed. Active mappings are also written as dpkg
+`Provides:` entries, so APT and dpkg dependency checks can see them. Removing a
+target removes the mapping and warns if an installed Arch package still depends
+on that virtual name. See [paclink documentation](docs/en/paclink.md) for
+verification commands.
 
 ### Development Install
 

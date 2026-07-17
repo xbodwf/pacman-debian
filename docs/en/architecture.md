@@ -161,10 +161,11 @@ libxtst libxtst6
 python python3
 ```
 
-The C libalpm shim reads this file directly at startup via `load_paclinks()`,
-adding virtual names as `provides` on the corresponding dpkg packages.
-No recompilation is needed to add new mappings. Use `paclink -I` to
-initialize all common mappings from your installed Debian packages.
+The C libalpm shim reads this file directly at startup via `load_paclinks()`.
+paclink also writes the active virtual names as `Provides:` on the
+corresponding dpkg packages. No recompilation is needed to add new mappings.
+Use `paclink -Sy` to download the standalone source and `paclink -Syu` to
+activate mappings whose Debian targets are installed.
 
 ## Sync Flow (Release-based for Debian repos)
 

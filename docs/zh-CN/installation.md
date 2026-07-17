@@ -28,7 +28,8 @@ sudo $(which pacman-debian-setup)
 5. 安装 Arch 兼容工具（`update-ca-trust`、`archlinux-java`、`fix_default`）
 6. 安装 Arch 兼容 shell 函数（`/etc/profile.d/append_path.sh`）
 7. 注册虚拟 `pacman` 包到 dpkg 状态
-8. 创建默认 paclink 映射（sh → bash、python → python3 等）
+8. 安装指向独立 `xbodwf/paclinks` 仓库的 paclink 源配置；映射需要另外运行
+   `paclink -Sy` 和 `paclink -Syu` 才会启用
 
 ## 开发安装
 
@@ -54,6 +55,10 @@ sudo ln -sf "$PWD/dist/makepkg/index.js" /usr/local/bin/makepkg
 ```bash
 # 同步仓库
 sudo pacman -Sy
+
+# 同步并启用 Arch 到 Debian 兼容映射
+sudo paclink -Sy
+sudo paclink -Syu
 
 # 搜索
 pacman -Ss neofetch

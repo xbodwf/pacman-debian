@@ -40,5 +40,5 @@ yay -Ss ponysay
 sudo -E yay -S ponysay
 ```
 
-注意：依赖 `python`（而非 `python3`）的 AUR 包可通过 setup 创建的 paclink
-映射 `python → python3` 自动解析。
+注意：运行 `sudo paclink -Syu` 后，依赖 `python`（而非 `python3`）的 AUR
+包可通过 paclink 映射 `python → python3` 自动解析。

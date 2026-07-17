@@ -30,7 +30,9 @@ sudo $(which pacman-debian-setup)
 5. Installs Arch-compat helper tools (`update-ca-trust`, `archlinux-java`, `fix_default`)
 6. Installs Arch-compat shell functions (`/etc/profile.d/append_path.sh`)
 7. Registers a virtual `pacman` package in dpkg status
-8. Creates default paclink mappings (sh → bash, python → python3, etc.)
+8. Installs the paclink source configuration pointing to the standalone
+   `xbodwf/paclinks` repository; mappings are activated separately with
+   `paclink -Sy` and `paclink -Syu`
 
 ## Development Install
 
@@ -56,6 +58,10 @@ sudo ln -sf "$PWD/dist/makepkg/index.js" /usr/local/bin/makepkg
 ```bash
 # Sync repositories
 sudo pacman -Sy
+
+# Sync and activate Arch-to-Debian compatibility mappings
+sudo paclink -Sy
+sudo paclink -Syu
 
 # Search
 pacman -Ss neofetch

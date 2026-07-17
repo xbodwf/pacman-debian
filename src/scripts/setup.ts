@@ -169,6 +169,14 @@ async function main() {
       fs.copyFileSync(paclinkConfigSource, paclinkConfigTarget);
       console.log(`Created ${paclinkConfigTarget}`);
     }
+  } else {
+    const oldSource = 'https://raw.githubusercontent.com/xbodwf/pacman-debian/main/resources/paclinks.conf';
+    const newSource = 'https://raw.githubusercontent.com/xbodwf/paclinks/main/paclinks.conf';
+    const oldConfig = fs.readFileSync(paclinkConfigTarget, 'utf8');
+    if (oldConfig.includes(oldSource)) {
+      fs.writeFileSync(paclinkConfigTarget, oldConfig.replaceAll(oldSource, newSource));
+      console.log(`Updated ${paclinkConfigTarget} to the standalone paclinks repository`);
+    }
   }
   // --- Ask to add multilib repo ---
   const multilibPath = '/etc/pacman.d/multilib';

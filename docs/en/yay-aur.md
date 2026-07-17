@@ -65,5 +65,5 @@ yay -Ss ponysay
 sudo pacman -S jdk21-openjdk   # yay also works for sync packages
 ```
 
-Note: AUR packages that depend on `python` (not `python3`) are resolved
-automatically via paclink's `python → python3` mapping, created during setup.
+Note: AUR packages that depend on `python` (not `python3`) are resolved via
+paclink's `python → python3` mapping after running `sudo paclink -Syu`.

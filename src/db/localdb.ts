@@ -103,6 +103,41 @@ export function addPackage(pkg: InstalledPackage): void {
   updateFileIndex(pkg.name, pkg.files);
 }
 
+/** Replace several packages while loading and saving the indexes only once. */
+export function replacePackages(packages: InstalledPackage[], removeNames: string[] = []): void {
+  ensure();
+  const pkgIndex = loadPkgIndex();
+  const fileIndex = loadFileIndex();
+  const packageNames = new Set([...removeNames, ...packages.map(pkg => pkg.name)]);
+
+  for (const name of packageNames) {
+    const indexed = pkgIndex[name];
+    if (!indexed) continue;
+    const dir = path.join(LOCAL_DIR, indexed);
+    if (fs.existsSync(dir)) {
+      const files = readFiles(dir);
+      removeFileIndex(name, files);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    delete pkgIndex[name];
+  }
+
+  for (const pkg of packages) {
+    const dir = pkgDir(pkg);
+    fs.mkdirSync(dir, { recursive: true });
+    writeDesc(pkg);
+    writeFiles(pkg);
+    const link = path.join(BYNAME_DIR, pkg.name);
+    try { fs.unlinkSync(link); } catch {}
+    fs.symlinkSync(path.relative(BYNAME_DIR, dir), link);
+    pkgIndex[pkg.name] = path.relative(LOCAL_DIR, dir);
+    for (const file of pkg.files) fileIndex[file] = pkg.name;
+  }
+
+  savePkgIndex(pkgIndex);
+  saveFileIndex(fileIndex);
+}
+
 export function removePackage(name: string, version?: string): void {
   ensure();
   const link = path.join(BYNAME_DIR, name);
