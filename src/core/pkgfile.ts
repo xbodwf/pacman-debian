@@ -11,6 +11,7 @@ export interface PkgInfo {
   provides?: string[];
   url?: string;
   license?: string[];
+  groups?: string[];
   arch?: string;
   installedSize?: number;
   size?: number;
@@ -33,6 +34,7 @@ function parsePKGINFO(content: string): PkgInfo {
   const conflicts: string[] = [];
   const provides: string[] = [];
   const licenses: string[] = [];
+  const groups: string[] = [];
 
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
@@ -57,6 +59,7 @@ function parsePKGINFO(content: string): PkgInfo {
       case 'conflict': conflicts.push(val.split(/[<>=]/)[0].trim()); break;
       case 'provides': provides.push(val.split(/[<>=]/)[0].trim()); break;
       case 'license': licenses.push(val); break;
+      case 'group': groups.push(val); break;
     }
   }
 
@@ -64,6 +67,7 @@ function parsePKGINFO(content: string): PkgInfo {
   if (conflicts.length > 0) info.conflicts = conflicts;
   if (provides.length > 0) info.provides = provides;
   if (licenses.length > 0) info.license = licenses;
+  if (groups.length > 0) info.groups = groups;
   return info;
 }
 

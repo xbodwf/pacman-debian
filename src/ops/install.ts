@@ -20,10 +20,12 @@ import {
 import { writeDpkgEntry, dpkgHasPackage, readDpkgStatus } from '../db/dpkg-compat';
 import { acquireDpkgLock, releaseDpkgLock } from '../lock/dpkg-lock';
 import { removePackage, getPackage as getLocalPkg } from '../db/localdb';
-import { resolveDeps, detectConflicts } from '../core/deps';
+import { resolveDeps, detectConflicts, verCmp } from '../core/deps';
 import { formatBytes } from '../ui/format';
 import { color } from '../ui/colors';
-import { humanSize, drawProgressBar, formatRate, formatETA, terminalWidth } from '../ui/progress';
+import { renderTransProgress, renderDownloadBar, getCols, cleanFilename } from '../ui/progress';
+import { renderTable } from '../ui/table';
+import { runPostHooks } from '../core/hooks';
 import { confirm } from '../ui/prompt';
 import { t } from '../i18n';
 import type { InstalledPackage, RepoPkg } from '../core/types';
@@ -35,6 +37,27 @@ function sourceRepo(pkg: InstalledPackage): string {
 
 function distRepo(pkg: RepoPkg): string {
   return pkg.repo || pkg.repoType || 'unknown';
+}
+
+// .pacnew/.pacsave notes are buffered so they print after the current
+// progress-bar line completes (official pacman flushes delayed output at 100%).
+const pacnewNotes: string[] = [];
+
+function notePacnew(msg: string): void {
+  pacnewNotes.push(msg);
+}
+
+function flushPacnewNotes(): void {
+  while (pacnewNotes.length > 0) process.stdout.write(color.warn(pacnewNotes.shift()!) + '\n');
+}
+
+/** Official ALPM_PROGRESS_* verb for the install/upgrade loop. */
+function installVerb(name: string, newVer: string, oldVer: string | undefined): string {
+  if (oldVer === undefined) return t('progress_installing_msg', name);
+  const cmp = verCmp(newVer, oldVer);
+  if (cmp < 0) return t('progress_downgrading_msg', name);
+  if (cmp === 0) return t('progress_reinstalling_msg', name);
+  return t('progress_upgrading', name);
 }
 
 function refreshLoaderCache(): void {
@@ -201,6 +224,7 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
         const tmp = `${bak}.pacman-debian.tmp-${process.pid}`;
         fs.writeFileSync(tmp, entry.data, { mode: 0o755 });
         fs.renameSync(tmp, bak);
+        notePacnew(t('pacnew_installed', targetPath, bak));
       } else {
         if (fs.existsSync(targetPath) && fs.lstatSync(targetPath).isSymbolicLink()) fs.unlinkSync(targetPath);
         const tmp = `${targetPath}.pacman-debian.tmp-${process.pid}`;
@@ -234,7 +258,8 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
     provides: (info.provides || []).join(', '),
     maintainer: info.packager,
     homepage: info.url,
-    license: (info.license || []).join(', '), pkgbase: info.base, buildDate: info.buildDate,
+    license: (info.license || []).join(', '), groups: info.groups,
+    pkgbase: info.base, buildDate: info.buildDate,
     controlSection: 'misc', controlPriority: 'optional',
     installedSize: info.installedSize ?? (info.size ? Math.ceil(info.size / 1024) : undefined),
     installTime: Date.now(), reason, files, repoType: 'arch',
@@ -401,25 +426,39 @@ export async function installPkg(target: string, opts: InstallOptions = {}): Pro
     return false;
   }
 
-  const cols = process.stdout.columns || 80;
-  const barLen = Math.max(cols - 50, 8);
-  const drawBar = (pct: number) => {
-    const filled = Math.round((pct / 100) * barLen);
-    return `[${'#'.repeat(filled)}${'-'.repeat(barLen - filled)}] ${String(pct).padStart(3)}%`;
-  };
+    // Detect the archive's real name/version so -U shows installing/downgrading/
+  // reinstalling/upgrading like official pacman.
+  let instName = fname;
+  let instVersion: string | undefined;
+  try {
+    if (localPath.endsWith('.deb')) {
+      const c = parseDeb(localPath).control;
+      instName = c.package; instVersion = c.version;
+    } else {
+      const info = parsePkgTarZst(fs.readFileSync(localPath)).info;
+      instName = info.name || fname; instVersion = info.version;
+    }
+  } catch {}
 
-  console.log(color.title(t('packages_single', fname)) + '\n');
+  const opLine = installVerb(instName, instVersion || '', readDpkgStatus().get(instName)?.version);
+
+  const drawSingle = (pct: number): string => renderTransProgress(opLine, pct, 1, 1);
+
+  console.log(color.title(t('packages_single', instName)) + '\n');
   if (!await confirm(t('confirm_proceed'))) return true;
   if (opts.print) { console.log(t('would_install', fname)); return true; }
-  process.stdout.write(`(1/1) ${t('progress_loading_files_msg')} ${drawBar(0)}`);
+  if (!process.stdout.isTTY) { console.log(opLine); }
+  else process.stdout.write(drawSingle(0));
   let lastName = '';
   try {
     const result = await installPkgFile(localPath, 'explicit', opts, (current, total, name) => {
+      if (!process.stdout.isTTY) return;
       const pct = total > 0 ? Math.round(current / total * 100) : 100;
       lastName = name;
-      process.stdout.write(`\r\x1b[K(1/1) ${t('progress_loading_files_msg')} ${name} ${drawBar(pct)}`);
+      process.stdout.write(`\r\x1b[K${drawSingle(pct)}`);
     });
-    process.stdout.write(`\r\x1b[K(1/1) installing ${fname} ${drawBar(100)}\n`);
+    if (process.stdout.isTTY) process.stdout.write(`\r\x1b[K${drawSingle(100)}`);
+    flushPacnewNotes();
     if (isUrl) try { fs.unlinkSync(localPath); } catch {}
     return result;
   } catch (error) {
@@ -523,87 +562,79 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
 
   const _cfg = loadConfig();
   if (!opts.skipSummary && _cfg.verbosePkgLists) {
-    const cols = process.stdout.columns || 80;
-    const nameW = Math.max(20, Math.floor(cols * 0.3));
-    const verW = Math.max(16, Math.floor(cols * 0.2));
-    const repoW = Math.max(10, Math.floor(cols * 0.15));
-    console.log(t('packages_multi', String(allPkgs.length), ''));
-    console.log(`  ${'Name'.padEnd(nameW)} ${'Version'.padEnd(verW)} ${'Repo'.padEnd(repoW)} Size`);
-    console.log(`  ${'─'.repeat(nameW)} ${'─'.repeat(verW)} ${'─'.repeat(repoW)} ${'─'.repeat(8)}`);
-    for (const p of allPkgs) {
-      const name = p.package.length > nameW ? p.package.slice(0, nameW - 3) + '...' : p.package;
-      const ver = (p.version || '').length > verW ? (p.version || '').slice(0, verW - 3) + '...' : (p.version || '');
-      console.log(`  ${color.pkg(name.padEnd(nameW))} ${color.title(ver.padEnd(verW))} ${color.repo(p.repo.padEnd(repoW))} ${color.size(formatBytes(p.size || 0).padStart(8))}`);
-    }
+    const header = [
+      { title: t('table_header', String(allPkgs.length)) },
+      { title: t('table_old_version') },
+      { title: t('table_new_version') },
+      { title: t('table_net_change'), right: true },
+      { title: t('table_download_size'), right: true },
+    ];
+    const rows = allPkgs.map(p => [
+      `${color.repo(p.repo || '')}/${color.pkg(p.package)}`,
+      color.muted(''),
+      color.ok(p.version || ''),
+      color.size(formatBytes((p.installedSize || 0) * 1024)),
+      color.size(formatBytes(p.size || 0)),
+    ]);
+    console.log(renderTable(header, rows));
   } else if (!opts.skipSummary) {
     console.log(t('packages_multi', String(allPkgs.length), allPkgs.map(p => color.pkg(p.package)).join('  ')));
   }
   if (!opts.skipSummary) {
     console.log('');
-    console.log(t('total_download_size', color.size(formatBytes(totalSize).padStart(9))));
-    console.log(t('total_installed_size', color.size(formatBytes(totalInst).padStart(9))));
+    console.log(color.title(t('total_download_size', formatBytes(totalSize).padStart(9))));
+    console.log(color.title(t('total_installed_size', formatBytes(totalInst).padStart(9))));
     console.log('');
   }
 
   const takeover = new Map<string, { existing: InstalledPackage; incoming: RepoPkg }>();
   const currentDb = loadDatabase();
+  // Pre-transaction file lists, used to distinguish install/upgrade in hooks.
+  const preFiles = new Map<string, string[]>();
+  for (const p of allPkgs) {
+    const ex = currentDb.packages.get(p.package);
+    if (ex) preFiles.set(p.package, ex.files);
+  }
   for (const p of allPkgs) {
     const existing = currentDb.packages.get(p.package);
     if (existing && existing.repoType && existing.repoType !== p.repoType) takeover.set(p.package, { existing, incoming: p });
   }
-  if (!opts.confirmed && !await confirm(t('confirm_proceed'))) return 0;
+  if (!opts.confirmed && !await confirm(opts.downloadonly ? t('confirm_download') : t('confirm_proceed'))) return 0;
 
   if (opts.print) {
     for (const p of allPkgs) console.log(t('would_install', `${p.package}-${p.version}`));
     return allPkgs.length;
   }
 
-  // ---- Transaction start ----
-  console.log(t('processing_changes'));
-
   // ---- Download phase ----
   const total = allPkgs.length;
-  const cols = process.stdout.columns || 80;
   const parallelN = loadConfig().parallelDownloads || 1;
   console.log(t('retrieving_packages'));
 
   const downloaded: { pkg: RepoPkg; path: string; rate: number }[] = [];
   const startTime = Date.now();
 
-  /** Render a right-aligned progress bar line. leftText precedes `[`, rightText follows `]`. */
-  const barLine = (leftText: string, rightText: string, pct: number): string => {
-    const barLen = Math.max(cols - terminalWidth(leftText) - terminalWidth(rightText), 5);
-    const line = `${leftText}${drawProgressBar(pct, barLen)}${rightText}`;
-    if (terminalWidth(line) < cols) return line + ' '.repeat(cols - terminalWidth(line));
-    return line;
-  };
-
-  const nameWidth = Math.max(25, Math.floor(cols * 0.35));
-  let dlIdx = 0;
+  const hasBar = !opts.noProgressBar && process.stdout.isTTY && getCols() > 0;
 
   // Keep concurrent downloads on separate terminal rows instead of allowing
   // workers to overwrite each other's single-line progress display.
   const activeRows = Math.min(parallelN, total);
-  const downloadRows = Array.from({ length: activeRows }, () => '');
   const renderDownloadRow = (slot: number, line: string) => {
-    downloadRows[slot] = line;
-    if (opts.noProgressBar || !process.stdout.isTTY) return;
+    if (!hasBar) return;
     const up = activeRows - slot;
     process.stdout.write(`\x1b[${up}A\r\x1b[2K${line}\x1b[${up}B`);
   };
-  if (!opts.noProgressBar && process.stdout.isTTY && activeRows > 1) {
+  if (hasBar && activeRows > 1) {
     process.stdout.write('\n'.repeat(activeRows));
   }
 
   const downloadOne = async (p: RepoPkg, slot: number): Promise<{ pkg: RepoPkg; path: string; rate: number }> => {
-    const idx = ++dlIdx;
-    const digits = String(total).length;
-    const prefix = `(${String(idx).padStart(digits)}/${String(total).padEnd(digits)})`;
     const pkgLabel = `${p.package}-${p.version}-${p.architecture || 'any'}`;
-    const displayName = pkgLabel.length > nameWidth ? pkgLabel.slice(0, nameWidth - 3) + '...' : pkgLabel;
+    if (!hasBar) process.stdout.write(` ${cleanFilename(pkgLabel)} downloading...\n`);
     let finalRate = 0, prevTime = Date.now(), prevBytes = 0, smoothRate = 0;
 
     const localPath = await downloadPkg(p, undefined, (rec, tot) => {
+      if (!hasBar) return;
       const now = Date.now();
       const chunkSec = Math.max((now - prevTime) / 1000, 0.001);
       const instant = (rec - prevBytes) / chunkSec;
@@ -611,28 +642,19 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       prevTime = now; prevBytes = rec;
       finalRate = smoothRate;
 
-      const dl = humanSize(rec, 1);
-      const rateStr = formatRate(smoothRate);
       const eta = smoothRate > 0 && tot > 0 ? (tot - rec) / smoothRate : 0;
-      const etaS = formatETA(eta);
-      const pct = tot > 0 ? Math.round(rec / tot * 100) : 0;
-      const line = barLine(
-        ` ${prefix} ${displayName.padEnd(nameWidth)} ${dl.val.padStart(6)} ${dl.unit.padEnd(3)}  ${rateStr} ${etaS}  [`,
-        `] ${String(pct).padStart(3)}%`,
-        pct,
-      );
-      renderDownloadRow(slot, line);
+      renderDownloadRow(slot, renderDownloadBar({
+        filename: pkgLabel, total: tot, xfered: rec, rate: smoothRate, eta,
+      }));
     });
 
-    const finalSize = humanSize(p.size || 0, 1);
-    const compLine = barLine(
-      ` ${prefix} ${displayName.padEnd(nameWidth)} ${finalSize.val.padStart(6)} ${finalSize.unit.padEnd(3)}  ${formatRate(finalRate)} ${'00:00'}  [`,
-      `] 100%`,
-      100,
-    );
-    if (opts.noProgressBar) return { pkg: p, path: localPath, rate: finalRate };
+    const finalSize = p.size || 0;
+    const etaF = finalRate > 0 ? finalSize / finalRate : 0;
+    const compLine = renderDownloadBar({
+      filename: pkgLabel, total: finalSize, xfered: finalSize, rate: finalRate, eta: etaF,
+    }).replace(/\r$/, '') + '\n';
+    if (!hasBar) return { pkg: p, path: localPath, rate: finalRate };
     renderDownloadRow(slot, compLine);
-    if (!process.stdout.isTTY) process.stdout.write(compLine + '\n');
     return { pkg: p, path: localPath, rate: finalRate };
   };
 
@@ -664,24 +686,32 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
     if (takeover.size > 0) opts = { ...opts, takeoverConfirmed: true };
   }
 
-  // 汇总行
-  const totalSz = allPkgs.reduce((s, p) => s + (p.size || 0), 0);
-  const elapsed = (Date.now() - startTime) / 1000;
-  const totalRate = elapsed > 0 ? totalSz / elapsed : 0;
-  const totalLabel = `${t('total_all')} (${String(total)}/${String(total)})`;
-  const totalSizeStr = humanSize(totalSz, 1);
-  const totalRateStr = formatRate(totalRate);
-  const totalLine = barLine(
-    ` ${totalLabel.padEnd(nameWidth)} ${totalSizeStr.val.padStart(6)} ${totalSizeStr.unit.padEnd(3)}  ${totalRateStr} ${'00:00'}  [`,
-    `] 100%`,
-    100,
-  );
-  process.stdout.write(totalLine + '\n');
+  // Total download bar (official pacman shows it once for multi-package syncs).
+  if (total > 1 && hasBar) {
+    const totalSz = allPkgs.reduce((s, p) => s + (p.size || 0), 0);
+    const elapsed = (Date.now() - startTime) / 1000;
+    const totalRate = elapsed > 0 ? totalSz / elapsed : 0;
+    const totalLine = renderDownloadBar({
+      filename: t('total_all'), total: totalSz, xfered: totalSz,
+      rate: totalRate, eta: elapsed, howmany: total, downloaded: total,
+    }).replace(/\r$/, '') + '\n';
+    process.stdout.write(totalLine);
+  }
 
-  // Verify downloaded archives before changing the system. Run independent
-  // checks concurrently so large upgrades do not wait on 89 serial processes.
-  process.stdout.write(t('progress_checking_integrity_msg') + '\n');
+  // Staged pre-install checks matching official pacman order. renderTransProgress
+  // prints the official `(%*zu/%*zu) check [bar] 100%` line (newline at 100%).
+  const howmany = total;
+  // Non-terminal fallback: a plain one-liner instead of the animated bar.
+  const checkLine = (verb: string, pct: number, n: number, cur: number): string => {
+    const line = renderTransProgress(verb, pct, n, cur);
+    return line !== '' ? line : `${verb}\n`;
+  };
+
+  // (1) keyring
+  process.stdout.write(checkLine(t('progress_checking_keys_msg'), 100, howmany, howmany));
+  // (2) package integrity
   let integrityOk = true;
+  let checkedCount = 0;
   const checkOne = async ({ pkg: p, path: fp }: { pkg: RepoPkg; path: string }) => {
     try {
       if (p.sha256) {
@@ -692,15 +722,28 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
       // decompression pass here just to validate the same bytes again.
       if (fp.endsWith('.deb')) parseDeb(fp);
     } catch (error) {
-      console.error(`\n  ${color.warn('WARNING')}: ${color.pkg(p.package)}: ${(error as Error).message || 'package file appears corrupted'}`);
+      if (hasBar) process.stdout.write(`\r\x1b[K`);
+      console.error(`${color.warn('WARNING')}: ${color.pkg(p.package)}: ${(error as Error).message || 'package file appears corrupted'}`);
       integrityOk = false;
+    } finally {
+      checkedCount++;
+      if (hasBar) {
+        process.stdout.write(`\r\x1b[K${renderTransProgress(t('progress_checking_integrity_msg'), Math.round(checkedCount / howmany * 100), howmany, checkedCount)}`);
+      }
     }
   };
   await Promise.all(downloaded.map(checkOne));
   if (!integrityOk) throw new Error('package integrity check failed');
+  if (!hasBar) process.stdout.write(`${t('progress_checking_integrity_msg')}\n`);
+
+  // (3) loading package files, (4) file conflicts
+  process.stdout.write(checkLine(t('progress_loading_files_msg'), 100, howmany, howmany));
+  process.stdout.write(checkLine(t('progress_checking_conflicts_msg'), 100, howmany, howmany));
 
   const cfg = loadConfig();
   if (cfg.checkSpace) {
+    // (5) available storage space
+    process.stdout.write(checkLine(t('progress_checking_space_msg'), 100, howmany, howmany));
     try {
       const dfPath = cfg.rootDir === '/' ? '/' : cfg.rootDir;
       const df = execSync(`df -k "${dfPath}"`, { encoding: 'utf8', timeout: 5000 });
@@ -709,7 +752,7 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
         const availKb = parseInt(match[3], 10);
         const needKb = allPkgs.reduce((s, p) => s + ((p.installedSize || 0)), 0);
         if (availKb < needKb) {
-          console.error(`\n  ${color.error('error')}: not enough disk space (need ${(needKb / 1024).toFixed(1)} MiB, have ${(availKb / 1024).toFixed(1)} MiB)`);
+          console.error(`${color.error('error')}: not enough disk space (need ${(needKb / 1024).toFixed(1)} MiB, have ${(availKb / 1024).toFixed(1)} MiB)`);
           throw new Error('not enough disk space');
         }
       }
@@ -720,21 +763,39 @@ export async function installPackages(targets: string[], opts: InstallOptions = 
   // Hold dpkg locks for the complete system-modifying transaction.
   await acquireDpkgLock();
   try {
+    console.log(t('processing_changes'));
+    const dpkgStatus = readDpkgStatus();
     for (let i = 0; i < downloaded.length; i++) {
       const { pkg: p, path: localPath } = downloaded[i];
       const isExplicit = targetPkgs.some(r => r.package === p.package);
-      const prefix = `(${String(i + 1).padStart(String(downloaded.length).length)}/${downloaded.length})`;
-      process.stdout.write(`${t('progress_upgrading', String(i + 1), String(downloaded.length), color.pkg(p.package))}\n`);
+      const isUpgrade = dpkgStatus.has(p.package) || currentDb.packages.has(p.package);
+      const oldVer = currentDb.packages.get(p.package)?.version ?? dpkgStatus.get(p.package)?.version;
+      const opLine = isUpgrade ? installVerb(p.package, p.version, oldVer) : t('progress_installing_msg', p.package);
+      if (hasBar) process.stdout.write(renderTransProgress(opLine, 0, downloaded.length, i + 1));
+      else console.log(opLine);
       const ok = await installPkgFile(localPath, isExplicit ? (opts.asdeps ? 'dependency' : 'explicit') : 'dependency', { ...opts, repo: p.repo },
-        (done, total, name) => {
-          process.stdout.write(`\r\x1b[K${prefix} ${t('progress_loading_files_msg')} ${name} ${total > 0 ? Math.round(done / total * 100) : 100}%`);
-          if (done >= total) process.stdout.write('\n');
+        (done, totalF) => {
+          if (!hasBar) return;
+          const pct = totalF > 0 ? Math.round(done / totalF * 100) : 100;
+          process.stdout.write(`\r\x1b[K${renderTransProgress(opLine, pct, downloaded.length, i + 1)}`);
         });
       if (!ok) throw new Error(`failed to install ${p.package}`);
+      flushPacnewNotes();
     }
 
-    // Post-transaction hooks
-    process.stdout.write(t('running_hooks') + '\n');
+    // Post-transaction hooks (real hooks from HookDir/usr/share/libalpm/hooks)
+    const freshDb = loadDatabase();
+    runPostHooks({
+      adds: allPkgs.map(p => {
+        const rec = freshDb.packages.get(p.package);
+        return {
+          name: p.package,
+          files: rec?.files ?? [],
+          oldFiles: preFiles.get(p.package),
+        };
+      }),
+      removes: [],
+    });
   } finally {
     releaseDpkgLock();
   }

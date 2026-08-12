@@ -11,11 +11,15 @@
 | `pacman -Syu` | 刷新数据库并升级 |
 | `pacman -Ss <keyword>` | 搜索仓库 |
 | `pacman -Si <pkg>` | 显示远程包信息 |
-| `pacman -Sl` | 列出仓库中所有包 |
+| `pacman -Sql` | 列出指定仓库中的所有包 |
 | `pacman -Sw <pkg>` | 下载包到缓存目录，不安装 |
 | `pacman -Sc` | 删除缓存目录中的包文件，保留仓库元数据 |
 | `pacman -Scc` | 清空整个缓存目录（含仓库 jsonl/idx） |
 | `pacman -Sp <pkg>` | 打印下载 URL（不会安装） |
+| `pacman -S -` | 从标准输入读取目标包列表（每行一个） |
+
+安装/升级的进度条与事务输出与官方 pacman 一致（下载条、
+`(n/n) 正在安装/更新/降级/重装 <pkg>` 以及事务后钩子）。
 
 ## 删除（-R）
 
@@ -44,6 +48,8 @@
 | `pacman -Qo <file>` | 查询文件属于哪个包 |
 | `pacman -Qs <keyword>` | 搜索已安装的包 |
 | `pacman -Qk [pkg]` | 验证包文件完整性 |
+| `pacman -Qm` | 列出外来包（已安装但不在任何已同步仓库中） |
+| `pacman -Qmq` | `-Qm` 的静默模式：仅输出包名 |
 | `pacman -Qq` | 静默模式：仅输出包名 |
 
 ## 其他
@@ -51,6 +57,7 @@
 | 命令 | 说明 |
 |------|------|
 | `pacman -U <file>` | 安装本地包文件（.deb/.pkg.tar.zst） |
+| `pacman -U -` | 从标准输入读取本地包文件路径（每行一个） |
 | `pacman -D --asdeps <pkg>` | 将包标记为依赖 |
 | `pacman -D --asexplicit <pkg>` | 将包标记为显式安装 |
 | `pacman -T <pkg>` | 检查依赖是否满足 |

@@ -51,7 +51,7 @@ export function loadConfig(): Config {
     checkSpace: false, ignorePkg: [], ignoreGroup: [], noUpgrade: [], noExtract: [],
     verbosePkgLists: false, cleanMethod: 'KeepInstalled',
     dbPath: '/var/lib/pacman-debian', cacheDir: '/var/cache/pacman-debian',
-    logFile: '', rootDir: '/', repos: [], notFindDepsFromCurrentRepo: false,
+    logFile: '', rootDir: '/', hookDirs: [], repos: [], notFindDepsFromCurrentRepo: false,
   };
   const configPath = findConfig();
   if (!fs.existsSync(configPath)) {
@@ -99,6 +99,7 @@ export function loadConfig(): Config {
       else if (k === 'cachedir') cfg.cacheDir = v;
       else if (k === 'logfile') cfg.logFile = v;
       else if (k === 'rootdir') cfg.rootDir = v;
+      else if (k === 'hookdir') cfg.hookDirs.push(v);
       continue;
     }
 

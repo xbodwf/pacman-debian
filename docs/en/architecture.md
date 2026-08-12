@@ -39,7 +39,11 @@ src/
 │   ├── index.ts             # Main makepkg entry
 │   ├── pkgbuild.ts          # PKGBUILD parser (single-bash optimization)
 │   ├── build.ts             # build()/package() execution (VCS support)
-├── ui/                      # User interface (prompt, formatting)
+├── ui/                      # User interface (prompt, progress, colors)
+│   ├── progress.ts          # Official pacman progress bars (download/trans)
+│   ├── colors.ts            # pacman color scheme (title/version/repo/groups)
+│   ├── format.ts            # humanize_size, column helpers
+│   └── prompt.ts            # Confirmation prompts (localized)
 └── index.ts                 # Entry point
 ```
 
@@ -68,10 +72,13 @@ Directory-per-package format:
 │   ├── fastfetch -> ../fastfetch-2.64.2-2/
 │   └── ...
 ├── fastfetch-2.64.2-2/
-│   ├── desc          # JSON metadata (name, version, deps, size, etc.)
+│   ├── desc          # JSON metadata (name, version, deps, groups, size, etc.)
 │   └── files         # File manifest
 └── ...
 ```
+
+The `desc` metadata stores the `%GROUP%` entries parsed from Arch `.PKGINFO`/
+`pkgfile`, so `-Qs`/`-Qi` can show the package groups like upstream pacman.
 
 ### dpkg compatibility
 
@@ -87,7 +94,7 @@ Each repository is cached in JSON Lines chunks (5000 packages per `.jsonl`
 file). During sync, a `packages.idx` index is also built — one line per
 package, sorted globally by name.
 
-**Idx format (v2, since 7.4.0):**
+**Idx format (v2):**
 ```
 pkgname version\tdescription\tprovides\tchunk\toffset
 ```
@@ -122,12 +129,14 @@ _pkgCache = new Map<string, RepoPkg>()  // LRU by chunkFile:offset
 | `-S <pkg>` / `-Qo` | Binary search `packages.idx` → seek JSONL | O(log N), single pread |
 | `-Ss` | Line-scan `packages.idx` (name + desc + version) | ~500KB scan, cached reads |
 | `-Sl` | Read `packages.idx` → seek each pkg | Lazy-load via index |
+| `-Qs` | `localdb.getAllPackages()` in-memory map + filter | Single scan, `indentprint` wrap |
+| `-Qm` | `batchFindInRepo()` batch lookup vs all installed | One batch repo read |
 | Dependency provides | Scan `packages.idx` provides field | Index-only, no JSON parse |
 | `-Qi` / `-Ql` | dpkg status or localdb | No cache involved |
 
 ## Version Comparison (built-in, no dpkg dependency)
 
-Since **7.4.0**, the version comparison algorithm (`verCmp` in `src/core/deps.ts`)
+The version comparison algorithm (`verCmp` in `src/core/deps.ts`)
 is a pure TypeScript port of dpkg's C implementation (`libdpkg/version.c`):
 
 ```
@@ -151,7 +160,7 @@ binary is now entirely optional — only the dpkg status file is read.
 
 ## Paclink Mapping Backend
 
-Since **7.4.0**, Debian→Arch package name mappings are stored in
+Debian→Arch package name mappings are stored in
 `/var/lib/pacman-debian/paclinks` (plain text, sorted by virt name):
 
 ```
@@ -169,7 +178,7 @@ activate mappings whose Debian targets are installed.
 
 ## Sync Flow (Release-based for Debian repos)
 
-Since **7.4.0**, Debian repository sync follows apt's approach:
+Debian repository sync follows apt's approach:
 
 1. Download `InRelease` / `Release` file with `If-Modified-Since`
 2. If 304 → repo is up to date
@@ -218,7 +227,8 @@ The dependency resolver (`src/core/deps.ts`) handles:
   Release-based SHA256 validation before downloading.
 - **Arch Linux**: Reads `db.tar.gz` from Arch-compatible repositories.
   Downloaded `.pkg.tar.zst` files are extracted and installed.
-- **Arch ARM**: Binary packages require glibc 2.38+ — Debian 12 ships 2.36.
+- **Arch ARM**: Using Arch binary repositories may run into glibc problems — if
+  you use Arch sources and hit glibc issues, you bear the consequences yourself.
   Use `makepkg` for local builds instead.
 
 ## Project Status
@@ -245,9 +255,23 @@ Key features:
 - **CleanMethod**: `KeepInstalled` / `KeepCurrent` cache cleaning policy.
 - **Downgrade protection**: Version comparison handles epochs, revisions, `~`
   (pre-release), and all dpkg version semantics.
+- **Official progress output**: `fillProgress`/`renderTransProgress` mirror
+  upstream pacman download and transaction bars (`(n/n) verb [###---] 100%`).
+  Installation verbs reflect the actual operation: `installing` / `upgrading` /
+  `downgrading` / `reinstalling` based on `verCmp` against the installed version.
+- **`.pacnew` / `.pacsave` notes**: Config files that cannot be merged are written
+  alongside as `.pacnew` and reported after the package progress line, like pacman.
+- **Local-package-newer warnings**: `-Syu` warns (`warning: <pkg>: local (<v1>) is
+  newer than <repo> (<v2>)`) and skips downgrading, matching upstream behaviour.
+- **Foreign package query** (`-Qm` / `-Qmq`): lists installed packages not present
+  in any synced repository, in quiet mode outputting bare names for scripting.
+- **Stdin target lists**: `-S -` and `-U -` read their target lists from stdin
+  (one per line), supporting pipelines such as
+  `comm -23 <(pacman -Qq) <(pacman -Qmq) | sudo pacman -S -`.
 
 Key limitations:
 
-- **Arch ARM binary repos require glibc 2.38+** — Debian 12 ships 2.36.
+- **Arch binary repositories**: if you use Arch sources and run into glibc
+  problems, you bear the consequences yourself.
 - **yay/AUR**: libalpm stub library works for search and dep resolution, but
   complex AUR dependency chains may fail due to Debian/Arch naming differences.

@@ -11,6 +11,7 @@ import { confirm } from '../ui/prompt';
 import { formatBytes } from '../ui/format';
 import { t } from '../i18n';
 import { color } from '../ui/colors';
+import { renderTable } from '../ui/table';
 
 const LOCAL_DIR = '/var/lib/pacman-debian/local';
 
@@ -38,9 +39,10 @@ function listInstalledFromLocal(): Map<string, string> {
   return result;
 }
 
-async function collectUpgradeCandidates(): Promise<UpgradeTarget[]> {
+async function collectUpgradeCandidates(): Promise<{ targets: UpgradeTarget[]; warnings: string[] }> {
   const installed = listInstalledFromLocal();
   const targets: UpgradeTarget[] = [];
+  const warnings: string[] = [];
 
   // Filter IgnorePkg / IgnoreGroup
   const cfg = loadConfig();
@@ -64,9 +66,12 @@ async function collectUpgradeCandidates(): Promise<UpgradeTarget[]> {
   for (const [name, oldVer] of installed) {
     if (ignoreSet.has(name.toLowerCase())) continue;
     const pkg = repoPkgs.get(name);
-    if (!pkg) continue;
-    if (pkg.version && verCmp(pkg.version, oldVer) > 0) {
+    if (!pkg || !pkg.version) continue;
+    const cmp = verCmp(pkg.version, oldVer);
+    if (cmp > 0) {
       targets.push({ name, oldVer, newVer: pkg.version, pkg, oldInstalledSize: oldSizes.get(name) || 0 });
+    } else if (cmp < 0) {
+      warnings.push(t('local_newer', name, oldVer, pkg.repo || pkg.repoType || '?', pkg.version));
     }
   }
 
@@ -83,13 +88,16 @@ async function collectUpgradeCandidates(): Promise<UpgradeTarget[]> {
     if (ignoreSet.has(lc) || seen.has(lc)) continue;
     seen.add(lc);
     const rp = dpkgRepoPkgs.get(debName);
-    if (!rp) continue;
-    if (rp.version && verCmp(rp.version, debInfo.version) > 0) {
+    if (!rp || !rp.version) continue;
+    const cmp = verCmp(rp.version, debInfo.version);
+    if (cmp > 0) {
       targets.push({ name: debName, oldVer: debInfo.version, newVer: rp.version, pkg: rp, oldInstalledSize: debInfo.installedSize || 0 });
+    } else if (cmp < 0) {
+      warnings.push(t('local_newer', debName, debInfo.version, rp.repo || rp.repoType || '?', rp.version));
     }
   }
 
-  return targets;
+  return { targets, warnings };
 }
 
 export async function syncAndUpgrade(opts: InstallOptions = {}, force = false, extraTargets: string[] = []): Promise<void> {
@@ -102,7 +110,8 @@ async function doUpgrade(opts: InstallOptions = {}, extraTargets: string[] = [])
   console.log(t('starting_upgrade'));
   const cfg = loadConfig();
   const ignoreSet = new Set(cfg.ignorePkg.map(s => s.toLowerCase()));
-  const targets = await collectUpgradeCandidates();
+  const { targets: upgradeTargets, warnings } = await collectUpgradeCandidates();
+  for (const w of warnings) console.log(color.warn(t('warn_prefix', w)));
   const explicit = extraTargets.map(target => {
     const slash = target.indexOf('/');
     const repo = slash > 0 ? target.slice(0, slash) : undefined;
@@ -114,9 +123,9 @@ async function doUpgrade(opts: InstallOptions = {}, extraTargets: string[] = [])
     return pkg ? { name: pkg.package, oldVer: '', newVer: pkg.version, pkg, oldInstalledSize: 0 } : undefined;
   }).filter((target): target is UpgradeTarget => !!target);
   const byName = new Map<string, UpgradeTarget>();
-  for (const target of [...targets, ...explicit]) byName.set(target.name.toLowerCase(), target);
+  for (const target of [...upgradeTargets, ...explicit]) byName.set(target.name.toLowerCase(), target);
   const filtered = [...byName.values()].filter(t => !ignoreSet.has(t.name.toLowerCase()));
-  const ignored = targets.length - filtered.length;
+  const ignored = upgradeTargets.length - filtered.length;
 
   if (filtered.length === 0) {
      if (ignored > 0) console.log(`  ${color.warn(`${ignored} packages ignored by IgnorePkg`)}`);
@@ -131,35 +140,33 @@ async function doUpgrade(opts: InstallOptions = {}, extraTargets: string[] = [])
   const totalOld = filtered.reduce((s, t_) => s + (t_.oldInstalledSize * 1024), 0);
 
   if (cfg.verbosePkgLists) {
-    const cols = process.stdout.columns || 80;
-    const nameW = Math.max(16, Math.floor(cols * 0.22));
-    const verW = Math.max(12, Math.floor(cols * 0.13));
-    const netW = 12;
-    const sizeW = 8;
-    console.log(t('packages_multi', String(filtered.length), ''));
-    console.log(`  ${'Repo'.padEnd(10)} ${'Name'.padEnd(nameW)} ${'OldVer'.padEnd(verW)} ${'NewVer'.padEnd(verW)} ${'Net Change'.padStart(netW)} ${'Size'.padStart(sizeW)}`);
-    console.log(`  ${'─'.repeat(10)} ${'─'.repeat(nameW)} ${'─'.repeat(verW)} ${'─'.repeat(verW)} ${'─'.repeat(netW)} ${'─'.repeat(sizeW)}`);
-    for (const t_ of filtered) {
-      const r = (t_.pkg.repo || '').slice(0, 9).padEnd(10);
-      const n = t_.name.length > nameW ? t_.name.slice(0, nameW - 3) + '...' : t_.name;
-      const o = t_.oldVer.length > verW ? t_.oldVer.slice(0, verW - 3) + '...' : t_.oldVer;
-      const v = t_.newVer.length > verW ? t_.newVer.slice(0, verW - 3) + '...' : t_.newVer;
-      const netChange = ((t_.pkg.installedSize || 0) - t_.oldInstalledSize) * 1024;
-      const dlSize = t_.pkg.size || 0;
-       console.log(`  ${color.repo(r)} ${color.pkg(n.padEnd(nameW))} ${color.muted(o.padEnd(verW))} ${color.ok(v.padEnd(verW))} ${color.size(formatBytes(netChange).padStart(netW))} ${color.size(formatBytes(dlSize).padStart(sizeW))}`);
-    }
+    const header = [
+      { title: t('table_header', String(filtered.length)) },
+      { title: t('table_old_version') },
+      { title: t('table_new_version') },
+      { title: t('table_net_change'), right: true },
+      { title: t('table_download_size'), right: true },
+    ];
+    const rows = filtered.map(t_ => [
+      `${color.repo(t_.pkg.repo || '')}/${color.pkg(t_.name)}`,
+      color.muted(t_.oldVer),
+      color.ok(t_.newVer),
+      color.size(formatBytes(((t_.pkg.installedSize || 0) - t_.oldInstalledSize) * 1024)),
+      color.size(formatBytes(t_.pkg.size || 0)),
+    ]);
+    console.log(renderTable(header, rows));
   } else {
      console.log(t('packages_multi', String(filtered.length), filtered.map(t_ => `${color.pkg(t_.name)} ${color.muted(t_.oldVer)} -> ${color.ok(t_.newVer)}`).join('  ')));
   }
   console.log('');
-  console.log(t('total_download_size', formatBytes(totalDl).padStart(9)));
-  console.log(t('total_installed_size', formatBytes(totalInst).padStart(9)));
+  console.log(color.title(t('total_download_size', formatBytes(totalDl).padStart(9))));
+  console.log(color.title(t('total_installed_size', formatBytes(totalInst).padStart(9))));
   if (totalInst > 0 && totalOld > 0) {
-    console.log(t('total_net_upgrade', formatBytes(totalInst - totalOld).padStart(9)));
+    console.log(color.title(t('total_net_upgrade', formatBytes(totalInst - totalOld).padStart(9))));
   }
   console.log('');
 
-  if (!await confirm(t('confirm_proceed'))) { return; }
+  if (!await confirm(opts.downloadonly ? t('confirm_download') : t('confirm_proceed'))) { return; }
 
   if (opts.print) {
     for (const t_ of filtered) console.log(t('would_upgrade', `${t_.name} ${t_.oldVer} -> ${t_.newVer}`));

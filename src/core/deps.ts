@@ -138,7 +138,7 @@ export function verCmp(a: string, b: string): number {
   return verrevcmp(va.revision, vb.revision);
 }
 
-function checkVersion(installed: string, operator: string, required: string): boolean {
+export function checkVersion(installed: string, operator: string, required: string): boolean {
   const cmp = verCmp(installed, required);
   switch (operator) {
     case '>=': return cmp >= 0;

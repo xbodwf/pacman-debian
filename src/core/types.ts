@@ -33,6 +33,7 @@ export interface InstalledPackage {
   provides?: string;
   maintainer?: string;
   license?: string;
+  groups?: string[];
   pkgbase?: string;
   buildDate?: number;
   homepage?: string;
@@ -88,6 +89,7 @@ export interface Config {
   cacheDir: string;
   logFile: string;
   rootDir: string;
+  hookDirs: string[];
   repos: RepoConfig[];
   notFindDepsFromCurrentRepo: boolean;
 }

@@ -10,7 +10,7 @@
 ## npm 安装（推荐）
 
 ```bash
-npm install -g pacman-debian@latest
+sudo npm install -g pacman-debian@latest
 sudo $(which pacman-debian-setup)
 ```
 

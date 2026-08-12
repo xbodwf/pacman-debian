@@ -19,7 +19,7 @@ Over 200 stubs are provided for rarely-used functions.
 - **packages.idx binary search (C)**: `alpm_db_get_pkg` and
   `alpm_find_dbs_satisfier` use binary search on the sorted index, then read
   a single JSONL line by byte offset — no full JSONL loading.
-- **Paclink file backend**: Since 7.4.0, mappings are read from
+- **Paclink file backend**: mappings are read from
   `/var/lib/pacman-debian/paclinks` (sorted text file) by `load_paclinks()`.
   No hardcoded table or recompilation needed. `libc6 → glibc`,
   `libxtst6 → libxtst`, `golang-go → go`, etc. are resolved at startup.

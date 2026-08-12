@@ -11,11 +11,16 @@
 | `pacman -Syu` | Refresh databases and upgrade |
 | `pacman -Ss <keyword>` | Search repositories |
 | `pacman -Si <pkg>` | Show remote package information |
-| `pacman -Sl` | List all packages in repositories |
+| `pacman -Sql` | List all packages in a given repository |
 | `pacman -Sw <pkg>` | Download packages to cache without installing |
 | `pacman -Sc` | Remove unused cached package files |
 | `pacman -Scc` | Clear entire cache (including repo jsonl/idx) |
 | `pacman -Sp <pkg>` | Print download URL without installing |
+| `pacman -S -` | Read target package list from stdin (one per line) |
+
+Install/upgrade progress bars and transaction output mirror upstream pacman
+(download bar, `(n/n) installing/upgrading/downgrading/reinstalling <pkg>`, and
+post-transaction hooks).
 
 ## Remove (-R)
 
@@ -45,6 +50,8 @@ together with a single confirmation prompt.
 | `pacman -Qo <file>` | Query which package owns a file |
 | `pacman -Qs <keyword>` | Search installed packages |
 | `pacman -Qk [pkg]` | Verify installed package file integrity |
+| `pacman -Qm` | List foreign packages (installed but not in any synced repository) |
+| `pacman -Qmq` | Quiet mode for `-Qm`: package names only |
 | `pacman -Qq` | Quiet mode: package names only, no versions |
 
 ## Other
@@ -52,6 +59,7 @@ together with a single confirmation prompt.
 | Command | Description |
 |---------|-------------|
 | `pacman -U <file>` | Install a local package file (.deb/.pkg.tar.zst) |
+| `pacman -U -` | Read local package file paths from stdin (one per line) |
 | `pacman -D --asdeps <pkg>` | Mark package as dependency |
 | `pacman -D --asexplicit <pkg>` | Mark package as explicitly installed |
 | `pacman -T <pkg>` | Check if dependencies are satisfied |

@@ -4,10 +4,12 @@ import { initDb, loadDatabase, saveDatabase, removePkg, getPackage, runScript } 
 import { readDpkgStatus, removeDpkgEntry } from '../db/dpkg-compat';
 import { acquireDpkgLock, releaseDpkgLock } from '../lock/dpkg-lock';
 import { confirm } from '../ui/prompt';
+import { runPostHooks } from '../core/hooks';
 import type { RemoveOptions } from '../core/options';
 import type { Database } from '../core/types';
 import { t } from '../i18n';
 import { color } from '../ui/colors';
+import { renderTransProgress, getCols } from '../ui/progress';
 
 const DPKG_INFO = '/var/lib/dpkg/info';
 const LOCAL_DIR = '/var/lib/pacman-debian/local';
@@ -251,35 +253,45 @@ export async function removeByName(name: string, opts: RemoveOptions = {}): Prom
   if (!await confirm(':: Proceed with removal?', false)) return true;
 
   if (opts.recursive || opts.cascade) {
-    const cols = process.stdout.columns || 80;
-    const barLen = Math.max((cols - 55), 5);
+    const removedFiles = new Map<string, string[]>();
+    for (const n of toRemove) {
+      const p = getPackage(db, n) || getDpkgPackage(n);
+      if (p) removedFiles.set(n, p.files);
+    }
     await acquireDpkgLock();
     try {
+      const hasBar = process.stdout.isTTY && getCols() > 0;
       for (let i = 0; i < toRemove.length; i++) {
         const n = toRemove[i];
         const p = getPackage(db, n) || getDpkgPackage(n);
         if (!p) continue;
-        const pname = `${n}-${p.version}`;
-        const fmtLine = (pct: number) => {
-          const filled = Math.round((pct / 100) * barLen);
-          const bar = '#'.repeat(filled) + '-'.repeat(barLen - filled);
-          return `(${i + 1}/${toRemove.length}) removing ${pname.padEnd(Math.max(20, cols - 65))} [${bar}] ${String(pct).padStart(3)}%`;
-        };
-        process.stdout.write(fmtLine(0));
+        const opText = `${t('progress_removing_msg')} ${n}-${p.version}`;
+        const fmtLine = (pct: number) => renderTransProgress(opText, pct, toRemove.length, i + 1);
+        if (hasBar) process.stdout.write(fmtLine(0));
+        else console.log(opText);
         const removed = await removeSingle(n, { ...opts, recursive: false, cascade: false, nodeps: true },
-          (done, total) => { process.stdout.write('\r\x1b[K' + fmtLine(Math.round(done / total * 100))); });
+          (done, total) => { if (hasBar) process.stdout.write('\r\x1b[K' + fmtLine(Math.round(done / total * 100))); });
         if (!removed) return false;
-        process.stdout.write('\r\x1b[K' + fmtLine(100) + '\n');
+        if (hasBar) process.stdout.write('\r\x1b[K' + fmtLine(100));
       }
     } finally {
       releaseDpkgLock();
     }
+    runPostHooks({
+      adds: [],
+      removes: [...removedFiles].map(([name, files]) => ({ name, files })),
+    });
     console.log(t('pkg_removed', name));
     return true;
   }
 
   const result = await removeSingle(name, opts);
   if (!result) return false;
+  const removedPkg = getPackage(db, name) || getDpkgPackage(name);
+  runPostHooks({
+    adds: [],
+    removes: removedPkg ? [{ name, files: removedPkg.files }] : [],
+  });
   console.log(t('pkg_removed', name));
   return true;
 }
@@ -326,28 +338,34 @@ export async function removePackages(names: string[], opts: RemoveOptions = {}):
 
   const cols = process.stdout.columns || 80;
   const barLen = Math.max((cols - 55), 5);
+  const removedFiles = new Map<string, string[]>();
+  for (const n of list) {
+    const p = getPackage(db, n) || getDpkgPackage(n);
+    if (p) removedFiles.set(n, p.files);
+  }
   await acquireDpkgLock();
   try {
+    const hasBar = process.stdout.isTTY && getCols() > 0;
     for (let i = 0; i < list.length; i++) {
       const n = list[i];
       const p = getPackage(db, n) || getDpkgPackage(n);
       if (!p) continue;
-      const pname = `${n}-${p.version}`;
-      const fmtLine = (pct: number) => {
-        const filled = Math.round((pct / 100) * barLen);
-        const bar = '#'.repeat(filled) + '-'.repeat(barLen - filled);
-        return `(${i + 1}/${list.length}) removing ${pname.padEnd(Math.max(20, cols - 65))} [${bar}] ${String(pct).padStart(3)}%`;
-      };
-      if (list.length > 1) process.stdout.write(fmtLine(0));
+      const opText = `${t('progress_removing_msg')} ${n}-${p.version}`;
+      const fmtLine = (pct: number) => renderTransProgress(opText, pct, list.length, i + 1);
+      if (list.length > 1 && hasBar) process.stdout.write(fmtLine(0));
       const removed = await removeSingle(n, { ...opts, recursive: false, cascade: false, nodeps: true },
-        (done, total) => { process.stdout.write('\r\x1b[K' + fmtLine(Math.round(done / total * 100))); });
+        (done, total) => { if (hasBar) process.stdout.write('\r\x1b[K' + fmtLine(Math.round(done / total * 100))); });
       if (!removed) return false;
-      if (list.length > 1) process.stdout.write('\r\x1b[K' + fmtLine(100) + '\n');
+      if (list.length > 1 && hasBar) process.stdout.write('\r\x1b[K' + fmtLine(100));
     }
   } finally {
     releaseDpkgLock();
   }
 
+  runPostHooks({
+    adds: [],
+    removes: [...removedFiles].map(([name, files]) => ({ name, files })),
+  });
   if (list.length === 1) console.log(t('pkg_removed', list[0]));
   return true;
 }

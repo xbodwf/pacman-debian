@@ -1,6 +1,6 @@
 import { installPkg, installPackages } from '../ops/install';
 import { removeByName, removePackages } from '../ops/remove';
-import { listInstalled, showInfo, queryFile, listFiles, listExplicit, listDeps, listOrphans, checkIntegrity } from '../ops/query';
+import { listInstalled, searchInstalled, showInfo, queryFile, listFiles, listExplicit, listDeps, listOrphans, listForeign, checkIntegrity } from '../ops/query';
 import { syncAndUpgrade, upgradeOnly } from '../ops/upgrade';
 import { syncRepos, searchRepo, findInRepo, downloadPkg, getPkgUrl, getRepoCache } from '../repo/repository';
 import { loadConfig } from '../repo/config';
@@ -28,6 +28,18 @@ import type { InstallOptions } from '../core/options';
 
 const CACHE = '/var/cache/pacman-debian/pkg';
 const PCACHE = '/var/cache/pacman-debian/packages';
+
+/** Read package/file list from stdin (official `pacman -S -` / `-U -`). */
+function readStdinLines(): Promise<string[]> {
+  return new Promise((resolve) => {
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', d => { data += d; });
+    process.stdin.on('end', () => {
+      resolve(data.split('\n').map(s => s.trim()).filter(Boolean));
+    });
+  });
+}
 const VERSION = pkg.version;
 
 function help(op?: string): void {
@@ -221,7 +233,7 @@ export async function parseArgs(args: string[]): Promise<void> {
   if (operands.length === 0) { console.error(t_('error_no_operation')); help(); return; }
 
   const raw = operands[0];
-  const rest = operands.slice(1);
+  let rest = operands.slice(1);
   if (raw === 'ciallo' || raw === 'pacman') { showEasterEgg(raw); return; }
   const opts: InstallOptions = { needed, noscriptlet, print, noProgressBar };
 
@@ -318,6 +330,11 @@ export async function parseArgs(args: string[]): Promise<void> {
   if (flags.includes('h') || rest.includes('--help') || rest.includes('-h')) { help(op); return; }
 
   if (op === 'S' || op === 'U') {
+    // Official `-S -` / `-U -`: read target list from stdin.
+    if (rest.includes('-')) {
+      rest = rest.filter(a => a !== '-');
+      rest.push(...await readStdinLines());
+    }
     const doRefresh = flags.includes('y');
     const forceRefresh = flags.includes('yy');
     const doUpgrade = flags.includes('u');
@@ -418,34 +435,36 @@ export async function parseArgs(args: string[]): Promise<void> {
   }
 
   if (op === 'Q') {
-    if (rest.length === 0) { listInstalled(); return; }
-    const qflags = flags || rest[0];
+    const qflags = (flags || rest[0] || '');
     if (qflags.startsWith('-')) {
       // -Q -i style: rest = ['-i', 'pkg']
       const q = qflags.slice(1);
       if (q === 'i') { if (rest[1]) showInfo(rest[1], false); else console.error(t_('error_no_pkg_name')); return; }
       if (q === 'o') { if (rest[1]) queryFile(rest[1]); else console.error(t_('error_no_file')); return; }
       if (q === 'l') { if (rest[1]) listFiles(rest[1]); else console.error(t_('error_no_pkg_name')); return; }
-      if (q === 's') { if (rest[1]) { listInstalled(rest[1]); return; } listInstalled(); return; }
+      if (q === 's') { if (rest[1]) { searchInstalled(rest[1]); return; } searchInstalled(''); return; }
       if (q === 'e') { listExplicit(); return; }
       if (q === 'd') { listDeps(); return; }
       if (q === 'dt') { listOrphans(); return; }
       if (q === 'k') { checkIntegrity(); return; }
-      if (q === 'q') { listInstalled(undefined, true); return; }
+      if (q === 'm' || q === 'mq' || q === 'qm') { listForeign(q.includes('q')); return; }
+      if (q === 'q') { listInstalled(true); return; }
       if (q.length > 1 && q[0] === 'k') { checkIntegrity(q.slice(1)); return; }
       console.error(t_('error_unknown_option', q));
       return;
     }
     // -Qflag style: flags already extracted from raw (e.g. -Ql → flags='l')
+    if (rest.length === 0 && !flags) { listInstalled(); return; }
     if (flags.includes('i')) { if (rest[0]) showInfo(rest[0], false); else console.error(t_('error_no_pkg_name')); return; }
     if (flags.includes('o')) { if (rest[0]) queryFile(rest[0]); else console.error(t_('error_no_file')); return; }
     if (flags.includes('l')) { if (rest[0]) listFiles(rest[0]); else console.error(t_('error_no_pkg_name')); return; }
-    if (flags.includes('s')) { listInstalled(rest[0]); return; }
+    if (flags.includes('s')) { searchInstalled(rest[0] ?? ''); return; }
     if (flags.includes('e')) { listExplicit(); return; }
     if (flags.includes('d') && flags.includes('t')) { listOrphans(); return; }
     if (flags.includes('d')) { listDeps(); return; }
+    if (flags.includes('m')) { listForeign(flags.includes('q')); return; }
     if (flags.includes('k')) { checkIntegrity(rest[0]); return; }
-    if (flags.includes('q')) { listInstalled(undefined, true); return; }
+    if (flags.includes('q')) { listInstalled(true); return; }
     showInfo(rest[0], false);
     return;
   }

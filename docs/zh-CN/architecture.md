@@ -38,7 +38,11 @@ src/
 │   ├── source.ts            # 源码下载/解压
 │   ├── build.ts             # build()/package() 执行
 │   └── printsrcinfo.ts      # .SRCINFO 生成
-├── ui/                      # 用户界面（提示、格式化）
+├── ui/                      # 用户界面（提示、进度、配色）
+│   ├── progress.ts          # 官方 pacman 进度条（下载/事务）
+│   ├── colors.ts            # pacman 配色（title/version/repo/groups）
+│   ├── format.ts            # humanize_size、列宽辅助
+│   └── prompt.ts            # 确认提示（本地化）
 └── index.ts                 # 入口
 ```
 
@@ -67,10 +71,13 @@ lib/pac4deb/                 # libalpm C 库
 │   ├── fastfetch -> ../fastfetch-2.64.2-2/
 │   └── ...
 ├── fastfetch-2.64.2-2/
-│   ├── desc          # JSON 元数据（名称、版本、依赖、大小等）
+│   ├── desc          # JSON 元数据（名称、版本、依赖、groups、大小等）
 │   └── files         # 文件清单
 └── ...
 ```
+
+`desc` 元数据会保存从 Arch `.PKGINFO`/`pkgfile` 解析出的 `%GROUP%` 条目，
+使 `-Qs`/`-Qi` 能像官方 pacman 一样显示包所属组。
 
 ### dpkg 兼容
 
@@ -112,6 +119,8 @@ IdxEntry { lines: string[], mtime: number, providesIndex: Map<string, Array<{chu
 | `-S <pkg>` / `-Qo` | 二分搜索 `packages.idx` → seek JSONL | O(log N) |
 | `-Ss` | 逐行扫索引（包名+描述）→ seek JSONL | 不解析 JSON |
 | `-Sl` | 扫索引 → seek 每个包 | 懒加载 |
+| `-Qs` | `localdb.getAllPackages()` 内存 Map + 过滤 | 单次扫描，`indentprint` 折行 |
+| `-Qm` | `batchFindInRepo()` 批量对比全部已安装 | 单次批量仓库读取 |
 | 依赖 provides | 扫索引 provides 字段 | 仅索引 |
 | `-Qi` / `-Ql` | dpkg 状态或本地数据库 | 不涉及缓存 |
 
@@ -152,7 +161,8 @@ IdxEntry { lines: string[], mtime: number, providesIndex: Map<string, Array<{chu
 
 - **Debian/Ubuntu**：读取 `Packages.gz` / `Packages.xz`
 - **Arch Linux**：读取 `db.tar.gz`，下载 `.pkg.tar.zst` 解包安装
-- **Arch ARM**：需要 glibc 2.38+（Debian 12 自带 2.36），请用 `makepkg` 本地编译
+- **Arch ARM**：使用 Arch 二进制仓库可能遇到 glibc 问题——如果你使用 Arch 源，
+  遇到 glibc 问题请自行承担后果。可改用 `makepkg` 本地编译。
 
 ## 项目状态
 
@@ -164,8 +174,19 @@ IdxEntry { lines: string[], mtime: number, providesIndex: Map<string, Array<{chu
 - **颜色输出**：匹配官方 pacman 配色
 - **权限分离**：查询无需 root
 - **链接系统**（`paclink`）：Debian→Arch 虚拟包名映射
+- **官方进度输出**：`fillProgress`/`renderTransProgress` 对齐上游 pacman 的
+  下载条与事务条（`(n/n) 动词 [###---] 100%`）。安装动词按 `verCmp` 与已装
+  版本对比显示 `正在安装 / 正在更新 / 正在降级 / 正在重装`。
+- **`.pacnew` / `.pacsave` 提示**：无法合并的配置文件以 `.pacnew` 形式写出，
+  并在该包进度行结束后提示，与 pacman 一致。
+- **本地版本更新警告**：`-Syu` 时对本地版本高于仓库的包输出
+  （`警告：<pkg>：本地 (<v1>) 比 <repo> 的版本更新 (<v2>)`）并跳过降级。
+- **外来包查询**（`-Qm` / `-Qmq`）：列出所有已安装但不在任何已同步仓库中的包，
+  静默模式仅输出包名，便于脚本使用。
+- **标准输入目标列表**：`-S -` 和 `-U -` 从标准输入逐行读取目标，支持管道如
+  `comm -23 <(pacman -Qq) <(pacman -Qmq) | sudo pacman -S -`。
 
 主要限制：
 
-- **Arch ARM 二进制仓库需要 glibc 2.38+** — Debian 12 自带 2.36
+- **Arch 二进制仓库**：如果你使用 Arch 源并遇到 glibc 问题，请自行承担后果。
 - **yay/AUR**：复杂 AUR 依赖链可能因包名差异失败

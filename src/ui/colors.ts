@@ -11,7 +11,6 @@ const ansi = {
   magenta: esc(35), green: esc(32), blue: esc(34), red: esc(31),
   yellow: esc(33), cyan: esc(36), dim: esc(2), bold: esc(1), reset: esc(0),
 };
-
 let configEnabled = false;
 let override: 'always' | 'never' | 'auto' | undefined;
 
@@ -48,4 +47,7 @@ export const color = {
   title: c(ansi.bold),
   size: c(ansi.magenta),
   rate: c(ansi.cyan),
+  // Official pacman: version = BOLDGREEN, groups = BOLDBLUE
+  version: c(ansi.bold + ansi.green),
+  groups: c(ansi.bold + ansi.blue),
 };

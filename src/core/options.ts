@@ -13,6 +13,7 @@ export interface InstallOptions {
   skipDependencyResolution?: boolean;
   preparedPackages?: RepoPkg[];
   takeoverConfirmed?: boolean;
+  downloadonly?: boolean; // -w, only download archives
 }
 
 export interface RemoveOptions {
