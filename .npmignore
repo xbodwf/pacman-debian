@@ -1,4 +1,7 @@
 src/
+!src/lock/
+src/lock/*
+!src/lock/dpkg-helper.c
 tsconfig.json
 node_modules/
 *.ts

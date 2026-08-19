@@ -18,22 +18,15 @@ const PACMAN_DB_TARGET = '/var/lib/pacman-debian';
 function ensureDpkgHelper(projectDir: string): void {
   const helperDir = path.join(projectDir, 'dist', 'lock');
   const helperPath = path.join(helperDir, 'dpkg-helper');
-  if (fs.existsSync(helperPath)) {
-    fs.chmodSync(helperPath, 0o755);
-    fs.accessSync(helperPath, fs.constants.X_OK);
-    console.log(`Executable helper ready: ${helperPath}`);
-    return;
-  }
-
   const sourcePath = path.join(projectDir, 'src', 'lock', 'dpkg-helper.c');
   if (!fs.existsSync(sourcePath)) {
-    throw new Error(`dpkg-helper is missing: ${helperPath}`);
+    throw new Error(`dpkg-helper source is missing: ${sourcePath}`);
   }
   fs.mkdirSync(helperDir, { recursive: true });
   execFileSync('gcc', ['-O2', '-s', '-o', helperPath, sourcePath], { stdio: 'pipe', timeout: 30000 });
   fs.chmodSync(helperPath, 0o755);
   fs.accessSync(helperPath, fs.constants.X_OK);
-  console.log(`Built ${helperPath}`);
+  console.log(`Built ${helperPath} from source`);
 }
 
 function getPacmanVersion(): string {

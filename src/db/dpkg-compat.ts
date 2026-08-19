@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 import { parseControlFile } from '../core/control';
 import { readPaclinks } from '../core/paclinks';
@@ -7,6 +8,29 @@ import type { InstalledPackage } from '../core/types';
 
 const DPKG_STATUS = '/var/lib/dpkg/status';
 const DPKG_INFO = '/var/lib/dpkg/info';
+const REPO_CACHE_DIR = '/var/cache/pacman-debian/packages';
+
+/* ---- Real Debian package name check (from repo idx cache) ---- */
+let _debPkgSet: Set<string> | null = null;
+function isRealDebPkg(name: string): boolean {
+  if (_debPkgSet) return _debPkgSet.has(name);
+  const set = new Set<string>();
+  try {
+    if (fs.existsSync(REPO_CACHE_DIR)) {
+      for (const repo of fs.readdirSync(REPO_CACHE_DIR)) {
+        const idx = path.join(REPO_CACHE_DIR, repo, 'packages.idx');
+        if (!fs.existsSync(idx)) continue;
+        const lines = fs.readFileSync(idx, 'utf8').split('\n');
+        for (const line of lines) {
+          const m = line.match(/^(\S+)/);
+          if (m) set.add(m[1]);
+        }
+      }
+    }
+  } catch {}
+  _debPkgSet = set;
+  return set.has(name);
+}
 
 export interface DpkgEntry {
   package: string;
@@ -104,7 +128,11 @@ export async function writeDpkgEntry(pkg: InstalledPackage): Promise<void> {
     translateDep = (dep: string): string => {
       const trimmed = dep.trim();
       const noArch = archMismatch ? trimmed.replace(/:[\w.]+/g, '') : trimmed;
-      const name = noArch.split(/[<>=]/)[0].trim().toLowerCase();
+      // Extract the package name: drop any version constraint "(...)" and any
+      // trailing ":arch". Debian deps look like "libc6 (>= 2.38)" or
+      // "python3 (< 3.12)" — splitting on /[<>=]/ would cut inside the
+      // constraint and leave "libc6 (" as the name.
+      const name = noArch.split(/\s+/)[0].replace(/\(.*/, '').replace(/:[\w.]+$/, '').toLowerCase();
 
       // Drop deps with wrong arch
       if (!archMismatch) {
@@ -115,8 +143,12 @@ export async function writeDpkgEntry(pkg: InstalledPackage): Promise<void> {
       const mapped = virtMap.get(name);
       if (mapped) return noArch.replace(/^[^<>=]+/, mapped);
       if (debSet.has(name)) return noArch;
+      // A real Debian package name is always a valid dependency.
+      if (isRealDebPkg(name)) return noArch;
+      // Unmapped Arch-only dependency (e.g. llvm-libs, libnotify, yyjson):
+      // drop it rather than leave an unresolvable Depends that breaks apt.
       if (name.endsWith('.so') || /^lib/.test(name) || name.endsWith('common') || name === 'sh') return '';
-      return noArch;
+      return '';
     };
   }
 

@@ -267,7 +267,10 @@ async function installArch(filePath: string, reason: 'explicit' | 'dependency', 
   };
 
   addPackage(db, ip);
-  try { await writeDpkgEntry(ip); } catch (e) { console.error(t('warn_failed_dpkg_status', String(e))); }
+  // Do NOT write a dpkg entry for Arch packages: they are managed by the
+  // pacman-debian local DB. Writing an entry under the Arch name with Arch
+  // dependency names pollutes dpkg and breaks apt. Arch names are instead
+  // exposed to dpkg through paclink's `Provides:` mechanism (refreshDpkgProvides).
   saveDatabase(db);
   completeTransaction(tx.id);
   return true;

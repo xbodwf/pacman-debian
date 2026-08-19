@@ -1,6 +1,6 @@
 {
   "name": "pacman-debian",
-  "version": "7.8.0",
+  "version": "7.8.1",
   "description": "A Debian/Ubuntu package manager using Arch Linux pacman syntax. Manages .deb packages at dpkg level, supports Arch .pkg.tar.zst, AUR helpers (yay), and makepkg. Configurable multi-repo setup.",
   "pacmanVersion": "7.1.0",
   "main": "dist/index.js",
@@ -17,6 +17,7 @@
     "lib/pac4deb/src/genstubs3.sh",
     "lib/pac4deb/src/libalpm.c",
     "lib/pac4deb/src/stubs_manual.c",
+    "src/lock/dpkg-helper.c",
     "docs/",
     "LICENSE",
     "README.md",
@@ -41,7 +42,7 @@
     "setup": "sudo node dist/scripts/setup.js",
     "start": "node dist/index.js",
     "postinstall": "echo 'Run `sudo pacman-debian-setup` to complete installation.'",
-    "prepublishOnly": "pnpm build"
+    "prepublishOnly": "pnpm build && rm -f dist/lock/dpkg-helper"
   },
   "keywords": [
     "pacman",
